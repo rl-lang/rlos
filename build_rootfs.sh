@@ -19,9 +19,11 @@ require_program_source() {
     fi
 }
 
-require_bin busybox
+# require_bin busybox
 require_bin rl
 require_program_source rlsh
+require_program_source hostname
+require_program_source whoami
 
 if [[ ! -f "$INIT_BIN" ]]; then
     echo "error: $INIT_BIN not found - run compile_init.sh first" >&2
@@ -33,9 +35,9 @@ mkdir -p "$ROOTFS"/{bin,dev,proc,sys,lib64,usr/lib}
 
 cp "$INIT_BIN" "$ROOTFS/init"
 
-echo "installing busybox shell..."
-cp "$(command -v busybox)" "$ROOTFS/bin/"
-ln -sf busybox "$ROOTFS/bin/sh"
+# echo "installing busybox shell..."
+# cp "$(command -v busybox)" "$ROOTFS/bin/"
+# ln -sf busybox "$ROOTFS/bin/sh"
 
 echo "installing rl..."
 RL_PATH="$(command -v rl)"
@@ -66,5 +68,9 @@ fi
 echo "packaging rl-programs..."
 echo "installing rlsh..."
 "$ROOTFS/bin/rl" package "$PROGRAMS/rlsh.rl" -o "$ROOTFS/bin/rlsh"
+echo "installing rlwhoami..."
+"$ROOTFS/bin/rl" package "$PROGRAMS/whoami.rl" -o "$ROOTFS/bin/rlwhoami"
+echo "installing rlhostname..."
+"$ROOTFS/bin/rl" package "$PROGRAMS/hostname.rl" -o "$ROOTFS/bin/rlhostname"
 
 echo "done: $ROOTFS populated"
