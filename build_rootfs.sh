@@ -25,6 +25,7 @@ require_program_source rlsh
 require_program_source hostname
 require_program_source whoami
 require_program_source ls
+require_program_source wc
 
 if [[ ! -f "$INIT_BIN" ]]; then
     echo "error: $INIT_BIN not found - run compile_init.sh first" >&2
@@ -75,5 +76,7 @@ echo "installing rl-hostname..."
 "$ROOTFS/bin/rl" package "$PROGRAMS/hostname.rl" -o "$ROOTFS/bin/hostname"
 echo "installing rl-ls..."
 "$ROOTFS/bin/rl" package "$PROGRAMS/ls.rl" -o "$ROOTFS/bin/ls"
+echo "installing rl-wc..."
+"$ROOTFS/bin/rl" package "$PROGRAMS/wc.rl" -o "$ROOTFS/bin/wc"
 
 echo "done: $ROOTFS populated"
