@@ -6,4 +6,5 @@ linux/
 iso/
 *.iso
 x11root/
+wlroot/
 *.img

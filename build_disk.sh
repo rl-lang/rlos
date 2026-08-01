@@ -2,10 +2,11 @@
 set -euo pipefail
 
 ROOTFS="rootfs"
+KERNEL="bzImage"
 OUT="disk.img"
 SIZE_MB=512
 
-for tool in parted mkfs.ext4 losetup; do
+for tool in parted mkfs.ext4 losetup grub-install; do
     if ! command -v "$tool" > /dev/null 2>&1; then
         echo "error: required tool '$tool' not found on PATH" >&2
         exit 1
@@ -13,7 +14,12 @@ for tool in parted mkfs.ext4 losetup; do
 done
 
 if [[ ! -d "$ROOTFS" ]]; then
-    echo "error: $ROOTFS directory not found - run build_rootfs.sh first" >&2
+    echo "error: $ROOTFS not found - run build_rootfs.sh first" >&2
+    exit 1
+fi
+
+if [[ ! -f "$KERNEL" ]]; then
+    echo "error: $KERNEL not found - run compile_kernel.sh first" >&2
     exit 1
 fi
 
@@ -23,18 +29,38 @@ truncate -s "${SIZE_MB}M" "$OUT"
 
 echo "partitioning..."
 parted -s "$OUT" mklabel gpt
-parted -s "$OUT" mkpart primary ext4 1MiB 100%
+parted -s "$OUT" mkpart bios_grub 1MiB 2MiB
+parted -s "$OUT" set 1 bios_grub on
+parted -s "$OUT" mkpart primary ext4 2MiB 100%
+parted -s "$OUT" set 2 boot on
 
 LOOP="$(sudo losetup --show -fP "$OUT")"
 trap 'sudo losetup -d "$LOOP"' EXIT
 
-echo "formatting ${LOOP}p1..."
-sudo mkfs.ext4 -q "${LOOP}p1"
+echo "formatting ${LOOP}p2..."
+sudo mkfs.ext4 -q "${LOOP}p2"
 
 MNT="$(mktemp -d)"
-sudo mount "${LOOP}p1" "$MNT"
-echo "copying rootfs into disk image..."
+sudo mount "${LOOP}p2" "$MNT"
+
+echo "copying rootfs..."
 sudo cp -a "$ROOTFS"/. "$MNT"/
+
+echo "installing kernel + grub config..."
+sudo mkdir -p "$MNT/boot/grub"
+sudo cp "$KERNEL" "$MNT/boot/bzImage"
+sudo tee "$MNT/boot/grub/grub.cfg" > /dev/null << 'EOF'
+set timeout=0
+set default=0
+
+menuentry "rlOS" {
+  linux /boot/bzImage root=/dev/vda2 rootfstype=ext4 console=tty0
+}
+EOF
+
+echo "installing grub bootloader onto $LOOP..."
+sudo grub-install --target=i386-pc --boot-directory="$MNT/boot" "$LOOP"
+
 sudo umount "$MNT"
 rmdir "$MNT"
 
