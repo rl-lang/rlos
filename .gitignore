@@ -1,4 +1,5 @@
 bzImage
+init
 initramfs.img
 rootfs/
 *.o
