@@ -30,7 +30,7 @@ int main(void) {
   setsid();
   ioctl(0, TIOCSCTTY, 1);
 
-  execve("/bin/sh", (char *[]){"/bin/sh", "-i", NULL}, NULL);
+  execve("/bin/rlsh", (char *[]){"/bin/rlsh", "-i", NULL}, NULL);
   warn("init: execve failed\n");
 
   for (;;) {
