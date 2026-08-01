@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOTFS="rootfs"
 INIT_BIN="init"
+PROGRAMS="rl_programs"
 
 require_bin() {
     if ! command -v "$1" > /dev/null 2>&1; then
@@ -11,8 +12,16 @@ require_bin() {
     fi
 }
 
+require_program_source() {
+    if [[ ! -f "$PROGRAMS/$1.rl" ]]; then
+        echo "error: required program source code '$1.rl' not found in '$PROGRAMS'" >&2
+        exit 1
+    fi
+}
+
 require_bin busybox
 require_bin rl
+require_program_source rlsh
 
 if [[ ! -f "$INIT_BIN" ]]; then
     echo "error: $INIT_BIN not found - run compile_init.sh first" >&2
@@ -53,5 +62,9 @@ else
     echo "error: dynamic linker $LD_LINUX not found" >&2
     exit 1
 fi
+
+echo "packaging rl-programs..."
+echo "installing rlsh..."
+"$ROOTFS/bin/rl" package "$PROGRAMS/rlsh.rl" -o "$ROOTFS/bin/rlsh"
 
 echo "done: $ROOTFS populated"
