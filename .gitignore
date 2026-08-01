@@ -4,3 +4,5 @@ initramfs.img
 rootfs/
 *.o
 linux/
+iso/
+*.iso
