@@ -15,7 +15,7 @@ if [[ -z "$RL_BIN" ]]; then
     exit 1
 fi
 
-for tool in pacman ldd; do
+for tool in pacman readelf find; do
     if ! command -v "$tool" > /dev/null 2>&1; then
         echo "error: required tool '$tool' not found on PATH" >&2
         exit 1
@@ -76,15 +76,20 @@ cp "$FOOT_BIN" "$ROOTFS/usr/bin/"
 copy_deps_from_root() {
     local bin="$1"
     local pkgroot="$2"
-    local deps
-    deps="$(ldd "$bin" 2>/dev/null | awk '{print $3}' | grep '^/' || true)"
-    for lib in $deps; do
-        local src="$pkgroot$lib"
-        if [[ -f "$src" ]]; then
-            mkdir -p "$ROOTFS$(dirname "$lib")"
-            cp -n "$src" "$ROOTFS$(dirname "$lib")/" 2>/dev/null || true
-        else
-            echo "warning: $lib not found under $pkgroot, skipping" >&2
+    local needed
+    needed="$(readelf -d "$bin" 2>/dev/null | grep NEEDED | sed -E 's/.*\[(.*)\].*/\1/')"
+    for soname in $needed; do
+        local found
+        found="$(find "$pkgroot/usr/lib" "$pkgroot/lib" -name "$soname" 2>/dev/null | head -n1)"
+        if [[ -z "$found" ]]; then
+            echo "warning: $soname not found under $pkgroot, skipping" >&2
+            continue
+        fi
+        local dest_dir="$ROOTFS$(dirname "${found#$pkgroot}")"
+        mkdir -p "$dest_dir"
+        if [[ ! -f "$dest_dir/$(basename "$found")" ]]; then
+            cp -Pn "$found" "$dest_dir/" 2>/dev/null || true
+            copy_deps_from_root "$found" "$pkgroot"
         fi
     done
 }
@@ -95,30 +100,7 @@ copy_deps_from_root "$CAGE_BIN" "$WLROOT"
 echo "==> copying foot's own deps"
 copy_deps_from_root "$FOOT_BIN" "$WLROOT"
 
-echo "==> tracing rl's Wayland/EGL runtime deps directly"
-RL_DEPS="$(ldd "$RL_BIN" 2>/dev/null | awk '{print $3}' | grep '^/' || true)"
-if [[ -z "$RL_DEPS" ]]; then
-    echo "warning: no dynamic deps found for rl (statically linked, or run against a real GUI build)"
-else
-    for lib in $RL_DEPS; do
-        base="$(basename "$lib")"
-        # only pull the wayland/egl/gl-relevant subset; regular libc etc is already handled by build_rootfs.sh
-        case "$base" in
-            libwayland*|libxkbcommon*|libEGL*|libGL*|libgbm*|libdrm*)
-                src="$WLROOT$lib"
-                if [[ -f "$src" ]]; then
-                    mkdir -p "$ROOTFS$(dirname "$lib")"
-                    cp -n "$src" "$ROOTFS$(dirname "$lib")/" 2>/dev/null || true
-                elif [[ -f "$lib" ]]; then
-                    mkdir -p "$ROOTFS$(dirname "$lib")"
-                    cp -n "$lib" "$ROOTFS$(dirname "$lib")/" 2>/dev/null || true
-                    echo "note: $lib taken from host, not $WLROOT" >&2
-                else
-                    echo "warning: $lib not found anywhere, skipping" >&2
-                fi
-                ;;
-        esac
-    done
-fi
+echo "==> copying rl's own Wayland/EGL deps"
+copy_deps_from_root "$RL_BIN" "$WLROOT"
 
 echo "==> done. rebuild disk.img to pick these up: ./build_disk.sh"

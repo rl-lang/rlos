@@ -1,5 +1,6 @@
 #include <errno.h>
 #include <fcntl.h>
+#include <stdio.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mount.h>
@@ -30,14 +31,26 @@ int main(void) {
   setsid();
   ioctl(0, TIOCSCTTY, 1);
 
-  execve("/usr/bin/cage",
-         (char *[]){"/usr/bin/cage", "--", "/usr/bin/foot", "-e", "/bin/rlsh",
-                    NULL},
-         NULL);
-  warn("init: execve failed\n");
+  pid_t pid = fork();
+  if (pid == 0) {
+    execve("/usr/bin/cage",
+           (char *[]){"/usr/bin/cage", "--", "/usr/bin/foot", "-e", "/bin/rlsh",
+                      NULL},
+           NULL);
+    char buf[256];
+    int n =
+        snprintf(buf, sizeof(buf), "init: cage execve failed: %s (errno=%d)\n",
+                 strerror(errno), errno);
+    write(2, buf, n);
+    _exit(1);
+  }
 
   for (;;) {
-    if (wait(NULL) < 0 && errno == ECHILD)
+    int status;
+    pid_t died = wait(&status);
+    if (died < 0 && errno == ECHILD) {
+      warn("init: all children exited, halting\n");
       pause();
+    }
   }
 }
