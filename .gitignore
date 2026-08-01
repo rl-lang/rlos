@@ -1,9 +1,9 @@
 bzImage
 init
-initramfs.img
 rootfs/
 *.o
 linux/
 iso/
 *.iso
 x11root/
+*.img

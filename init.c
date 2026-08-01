@@ -11,6 +11,19 @@
 static void warn(const char *msg) { write(2, msg, strlen(msg)); }
 
 int main(void) {
+  mkdir("/newroot", 0755);
+  if (mount("/dev/vda1", "/newroot", "ext4", 0, NULL) < 0) {
+    warn("init: failed to mount root disk\n");
+  } else {
+    if (chdir("/newroot") < 0)
+      warn("init: chdir failed\n");
+    if (mount(".", "/", NULL, MS_MOVE, NULL) < 0)
+      warn("init: move mount failed\n");
+    if (chroot(".") < 0)
+      warn("init: chroot failed\n");
+    chdir("/");
+  }
+
   mount("proc", "/proc", "proc", 0, NULL);
   mount("sysfs", "/sys", "sysfs", 0, NULL);
   mount("devtmpfs", "/dev", "devtmpfs", 0, NULL);
