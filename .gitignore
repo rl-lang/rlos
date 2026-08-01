@@ -6,3 +6,4 @@ rootfs/
 linux/
 iso/
 *.iso
+x11root/
