@@ -15,6 +15,5 @@ fi
 
 qemu-system-x86_64 \
     -drive file="$DISK",format=raw,if=virtio \
-    -vga qxl \
-    -display gtk \
+    -nographic \
     -m 512

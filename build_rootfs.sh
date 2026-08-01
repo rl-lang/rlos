@@ -33,9 +33,9 @@ if [[ ! -f "$INIT_BIN" ]]; then
 fi
 
 echo "creating rootfs directory tree..."
-mkdir -p "$ROOTFS"/{bin,dev,proc,sys,lib64,usr/lib}
-
-cp "$INIT_BIN" "$ROOTFS/init"
+mkdir -p "$ROOTFS"/{bin,sbin,dev,proc,sys,lib64,usr/lib}
+cp "$INIT_BIN" "$ROOTFS/sbin/init"
+ln -sf sbin/init "$ROOTFS/init"
 
 # echo "installing busybox shell..."
 # cp "$(command -v busybox)" "$ROOTFS/bin/"

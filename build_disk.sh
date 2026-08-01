@@ -50,11 +50,13 @@ echo "installing kernel + grub config..."
 sudo mkdir -p "$MNT/boot/grub"
 sudo cp "$KERNEL" "$MNT/boot/bzImage"
 sudo tee "$MNT/boot/grub/grub.cfg" > /dev/null << 'EOF'
-set timeout=0
-set default=0
+set timeout=5
+serial --unit=0 --speed=115200
+terminal_input serial
+terminal_output serial
 
 menuentry "rlOS" {
-  linux /boot/bzImage root=/dev/vda2 rootfstype=ext4 console=tty0
+  linux /boot/bzImage root=/dev/vda2 rootfstype=ext4 console=ttyS0 earlyprintk=serial,ttyS0,115200
 }
 EOF
 
