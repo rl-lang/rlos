@@ -24,6 +24,7 @@ require_bin rl
 require_program_source rlsh
 require_program_source hostname
 require_program_source whoami
+require_program_source ls
 
 if [[ ! -f "$INIT_BIN" ]]; then
     echo "error: $INIT_BIN not found - run compile_init.sh first" >&2
@@ -68,9 +69,11 @@ fi
 echo "packaging rl-programs..."
 echo "installing rlsh..."
 "$ROOTFS/bin/rl" package "$PROGRAMS/rlsh.rl" -o "$ROOTFS/bin/rlsh"
-echo "installing rlwhoami..."
-"$ROOTFS/bin/rl" package "$PROGRAMS/whoami.rl" -o "$ROOTFS/bin/rlwhoami"
-echo "installing rlhostname..."
-"$ROOTFS/bin/rl" package "$PROGRAMS/hostname.rl" -o "$ROOTFS/bin/rlhostname"
+echo "installing rl-whoami..."
+"$ROOTFS/bin/rl" package "$PROGRAMS/whoami.rl" -o "$ROOTFS/bin/whoami"
+echo "installing rl-hostname..."
+"$ROOTFS/bin/rl" package "$PROGRAMS/hostname.rl" -o "$ROOTFS/bin/hostname"
+echo "installing rl-ls..."
+"$ROOTFS/bin/rl" package "$PROGRAMS/ls.rl" -o "$ROOTFS/bin/ls"
 
 echo "done: $ROOTFS populated"

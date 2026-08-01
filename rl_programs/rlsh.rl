@@ -5,13 +5,13 @@ get len from std::array
 get path_filename from std::path
 get result_unwrap_or from std::res
 
-dec string user = with_exec("/bin/rlwhoami", "").result_unwrap_or("unknown").trim()
-dec string host = with_exec("/bin/rlhostname", "").result_unwrap_or("unknown").trim()
+dec string user = with_exec("/bin/whoami", "").result_unwrap_or("unknown").trim()
+dec string host = with_exec("/bin/hostname", "").result_unwrap_or("unknown").trim()
 dec bool running = true
 
 while (running) {
-    dec string dir = cwd()?.path_filename()
-    if dir == "" { dir = "/" }
+    dec string dir = cwd().result_unwrap_or("").path_filename()
+    if dir == "" or dir == null { dir = "/" }
 
     dec string prompt = format("[{}@{} <{}>]$ ", user, host, dir)
 
@@ -29,7 +29,6 @@ while (running) {
           println(res.std::res::result_unwrap_err())
         }
     } else {
-        println(input)
         dec string cmd = ""
         dec string args = ""
         dec int first_ws = input.index_of(" ")
