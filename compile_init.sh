@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefall
+set -euo pipefail
 
 SRC="init.c"
 OUT="init"
