@@ -15,5 +15,8 @@ fi
 
 qemu-system-x86_64 \
     -drive file="$DISK",format=raw,if=virtio \
-    -nographic \
+    -vga none \
+    -device virtio-gpu-gl-pci \
+    -display gtk,gl=on \
+    -serial mon:stdio \
     -m 512
