@@ -253,4 +253,11 @@ fi
 # so foot doesn't have to scan/rebuild it itself at boot
 [[ -d "$WLROOT/var/cache/fontconfig" ]] && cp -a "$WLROOT/var/cache/fontconfig/." "$ROOTFS/var/cache/fontconfig/"
 
+echo "==> writing default foot.ini"
+mkdir -p "$ROOTFS/etc/xdg/foot"
+cat > "$ROOTFS/etc/xdg/foot/foot.ini" << 'EOF'
+[main]
+font=DejaVu Sans Mono:size=11
+EOF
+
 echo "==> done. rebuild disk.img to pick these up: ./build_disk.sh"
