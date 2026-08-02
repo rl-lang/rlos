@@ -1,0 +1,7 @@
+CONST arr[int] COL_KEYWORD = [197, 134, 192]
+CONST arr[int] COL_TYPE    = [78,  201, 176]
+CONST arr[int] COL_STRING  = [206, 145, 120]
+CONST arr[int] COL_NUMBER  = [181, 206, 168]
+CONST arr[int] COL_COMMENT = [106, 153,  85]
+CONST arr[int] COL_OP      = [212, 212, 212]
+CONST arr[int] COL_LINENUM = [80,  80,  80]
