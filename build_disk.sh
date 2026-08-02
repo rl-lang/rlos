@@ -4,7 +4,7 @@ set -euo pipefail
 ROOTFS="rootfs"
 KERNEL="bzImage"
 OUT="disk.img"
-SIZE_MB=512
+SIZE_MB=1024
 
 for tool in parted mkfs.ext4 losetup grub-install; do
     if ! command -v "$tool" > /dev/null 2>&1; then
