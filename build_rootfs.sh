@@ -33,9 +33,13 @@ if [[ ! -f "$INIT_BIN" ]]; then
 fi
 
 echo "creating rootfs directory tree..."
-mkdir -p "$ROOTFS"/{bin,sbin,dev,proc,sys,lib64,usr/lib}
+mkdir -p "$ROOTFS"/{bin,sbin,dev,proc,sys,tmp,lib64,usr/lib}
 cp "$INIT_BIN" "$ROOTFS/sbin/init"
 ln -sf sbin/init "$ROOTFS/init"
+
+echo "installing minimal /etc/passwd..."
+mkdir -p "$ROOTFS/etc"
+echo "root:x:0:0:root:/root:/bin/rlsh" > "$ROOTFS/etc/passwd"
 
 # echo "installing busybox shell..."
 # cp "$(command -v busybox)" "$ROOTFS/bin/"
