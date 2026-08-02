@@ -56,7 +56,7 @@ terminal_input serial
 terminal_output serial
 
 menuentry "rlOS" {
-  linux /boot/bzImage root=/dev/vda2 rootfstype=ext4 console=ttyS0 earlyprintk=serial,ttyS0,115200
+  linux /boot/bzImage root=/dev/vda2 rootfstype=ext4 rw console=ttyS0 earlyprintk=serial,ttyS0,115200
 }
 EOF
 
