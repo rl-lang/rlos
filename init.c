@@ -49,6 +49,18 @@ int main(void) {
   if (mount("devpts", "/dev/pts", "devpts", 0, "mode=0620,ptmxmode=0666") != 0)
     warnf("mount", "/dev/pts (devpts)");
 
+  /* devtmpfs only auto-populates kernel-created device nodes; it does
+   * not give us /dev/shm. Without it, POSIX shm_open() (which glibc
+   * hardcodes to /dev/shm/<name>) fails outright - and wlroots falls
+   * back to exactly that when its shm-file helper can't otherwise
+   * satisfy a request, silently leaving the affected object (a
+   * keyboard's keymap, the dmabuf format table, ...) half-initialized
+   * instead of erroring out. That's what was crashing cage the moment
+   * a client asked for the keymap. */
+  xmkdir("/dev/shm", 01777);
+  if (mount("tmpfs", "/dev/shm", "tmpfs", 0, "mode=1777") != 0)
+    warnf("mount", "/dev/shm (tmpfs)");
+
   int fd = open("/dev/console", O_RDWR);
   if (fd < 0) {
     warn("init: no console\n");
@@ -71,6 +83,7 @@ int main(void) {
   run_ok &= xmkdir("/run/user", 0755) == 0;
   run_ok &= xmkdir("/run/user/0", 0700) == 0;
   run_ok &= xchmod("/run/user/0", 0700) == 0;
+  run_ok &= xmkdir("/run/udev", 0755) == 0;
 
   /* seatd-launch needs /tmp to create its private socket dir */
   int tmp_ok = xmkdir("/tmp", 01777) == 0;
@@ -79,6 +92,46 @@ int main(void) {
   if (!run_ok || !tmp_ok)
     warn("init: /run or /tmp setup failed - is root mounted read-only? "
          "(check for 'rw' on the kernel command line)\n");
+
+  /* Coldplug: devtmpfs already created /dev/input/eventN etc. but with
+   * no rules applied and no hwdb tags, so libinput's udev backend
+   * finds nothing usable. Bring up udevd standalone (no systemd PID 1
+   * involved) and trigger+settle a synthetic "add" pass over existing
+   * /sys devices before starting the compositor. */
+  pid_t udevd_pid = fork();
+  if (udevd_pid == 0) {
+    execl("/usr/lib/systemd/systemd-udevd", "systemd-udevd", "--daemon",
+          (char *)NULL);
+    warn("init: exec systemd-udevd failed\n");
+    _exit(1);
+  }
+  if (udevd_pid > 0) {
+    /* give the daemon a moment to bind its control socket before we
+     * trigger events at it */
+    usleep(200000);
+
+    pid_t trig_pid = fork();
+    if (trig_pid == 0) {
+      execl("/usr/bin/udevadm", "udevadm", "trigger", "--action=add",
+            "--type=devices", (char *)NULL);
+      warn("init: exec udevadm trigger failed\n");
+      _exit(1);
+    }
+    if (trig_pid > 0)
+      waitpid(trig_pid, NULL, 0);
+
+    pid_t settle_pid = fork();
+    if (settle_pid == 0) {
+      execl("/usr/bin/udevadm", "udevadm", "settle", "--timeout=5",
+            (char *)NULL);
+      warn("init: exec udevadm settle failed\n");
+      _exit(1);
+    }
+    if (settle_pid > 0)
+      waitpid(settle_pid, NULL, 0);
+  } else {
+    warn("init: fork for systemd-udevd failed\n");
+  }
 
   pid_t pid = fork();
   if (pid == 0) {
@@ -97,14 +150,6 @@ int main(void) {
          * a UTF-8 locale here keeps foot on the real command. */
         "LANG=C.UTF-8",
         "LC_ALL=C.UTF-8",
-        /* No udevd runs in this initramfs, so /dev/input/eventN nodes
-         * exist (created directly by devtmpfs) but were never tagged
-         * in a udev database for libinput's enumeration to find. That
-         * makes libinput's backend init fail outright with zero
-         * devices found. Tell wlroots not to treat that as fatal so
-         * boot completes; keyboard/mouse won't work until a real
-         * udev daemon + coldplug trigger is added. */
-        "WLR_LIBINPUT_NO_DEVICES=1",
         NULL,
     };
     execve("/usr/bin/seatd-launch",

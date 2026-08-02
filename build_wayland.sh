@@ -53,7 +53,7 @@ EOF
 
     echo "==> installing cage, foot, seatd, and wayland/EGL runtime libs into $WLROOT"
     if ! sudo pacman -Sy --config "$PACCONF" --root "$WLROOT" --dbpath "$WLROOT/var/lib/pacman" \
-        --noconfirm cage foot wayland libxkbcommon mesa seatd ttf-dejavu; then
+        --noconfirm cage foot wayland libxkbcommon mesa seatd ttf-dejavu systemd xkeyboard-config libx11; then
         echo "error: pacman install into $WLROOT failed" >&2
         rm -f "$PACCONF"
         exit 1
@@ -180,6 +180,45 @@ if [[ -d "$WLROOT/usr/share/libinput" ]]; then
     cp -a "$WLROOT/usr/share/libinput/." "$ROOTFS/usr/share/libinput/"
 else
     echo "warning: $WLROOT/usr/share/libinput not found - libinput will find no input devices" >&2
+fi
+
+echo "==> copying X11 locale/Compose data (libxkbcommon compose-table support)"
+mkdir -p "$ROOTFS/usr/share/X11/locale"
+if [[ -d "$WLROOT/usr/share/X11/locale" ]]; then
+    cp -a "$WLROOT/usr/share/X11/locale/." "$ROOTFS/usr/share/X11/locale/"
+else
+    echo "warning: $WLROOT/usr/share/X11/locale not found - compose table will fail to load and dead keys/some apps may crash on it" >&2
+fi
+
+echo "==> copying xkeyboard-config data (keymaps for xkbcommon)"
+mkdir -p "$ROOTFS/usr/share/xkeyboard-config-2"
+if [[ -d "$WLROOT/usr/share/xkeyboard-config-2" ]]; then
+    cp -a "$WLROOT/usr/share/xkeyboard-config-2/." "$ROOTFS/usr/share/xkeyboard-config-2/"
+else
+    echo "error: $WLROOT/usr/share/xkeyboard-config-2 not found - is xkeyboard-config installed there?" >&2
+    exit 1
+fi
+
+echo "==> copying systemd-udevd, udevadm, and udev rules/hwdb"
+UDEVD_BIN="$WLROOT/usr/lib/systemd/systemd-udevd"
+UDEVADM_BIN="$WLROOT/usr/bin/udevadm"
+mkdir -p "$ROOTFS/usr/lib/systemd" "$ROOTFS/usr/lib/udev/rules.d"
+if [[ -f "$UDEVD_BIN" && -f "$UDEVADM_BIN" ]]; then
+    cp "$UDEVD_BIN" "$ROOTFS/usr/lib/systemd/"
+    cp "$UDEVADM_BIN" "$ROOTFS/usr/bin/"
+    copy_deps_from_root "$UDEVD_BIN" "$WLROOT"
+    copy_deps_from_root "$UDEVADM_BIN" "$WLROOT"
+else
+    echo "error: systemd-udevd or udevadm not found under $WLROOT - did pacman install systemd?" >&2
+    exit 1
+fi
+[[ -d "$WLROOT/usr/lib/udev/rules.d" ]] && cp -a "$WLROOT/usr/lib/udev/rules.d/." "$ROOTFS/usr/lib/udev/rules.d/"
+HWDB_BIN="$(find "$WLROOT/usr/lib/udev" "$WLROOT/etc/udev" -name 'hwdb.bin' 2>/dev/null | head -n1)"
+if [[ -n "$HWDB_BIN" ]]; then
+    mkdir -p "$ROOTFS/$(dirname "${HWDB_BIN#$WLROOT}")"
+    cp "$HWDB_BIN" "$ROOTFS/$(dirname "${HWDB_BIN#$WLROOT}")/"
+else
+    echo "warning: hwdb.bin not found under $WLROOT - run 'systemd-hwdb update' there first" >&2
 fi
 
 echo "==> copying C.utf8 locale into the rootfs"
