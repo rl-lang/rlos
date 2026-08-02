@@ -24,6 +24,8 @@ done
 
 CAGE_BIN="$WLROOT/usr/bin/cage"
 FOOT_BIN="$WLROOT/usr/bin/foot"
+SEATD_BIN="$WLROOT/usr/bin/seatd"
+SEATD_LAUNCH_BIN="$WLROOT/usr/bin/seatd-launch"
 
 if [[ -f "$CAGE_BIN" && -f "$FOOT_BIN" ]]; then
     echo "==> $CAGE_BIN and $FOOT_BIN already present, skipping pacman install"
@@ -49,9 +51,9 @@ EOF
         echo "note: pacman-key init skipped or already done"
     fi
 
-    echo "==> installing cage, foot, and wayland/EGL runtime libs into $WLROOT"
+    echo "==> installing cage, foot, seatd, and wayland/EGL runtime libs into $WLROOT"
     if ! sudo pacman -Sy --config "$PACCONF" --root "$WLROOT" --dbpath "$WLROOT/var/lib/pacman" \
-        --noconfirm cage foot wayland libxkbcommon mesa; then
+        --noconfirm cage foot wayland libxkbcommon mesa seatd ttf-dejavu; then
         echo "error: pacman install into $WLROOT failed" >&2
         rm -f "$PACCONF"
         exit 1
