@@ -19,4 +19,6 @@ qemu-system-x86_64 \
     -device virtio-gpu-gl-pci \
     -display gtk,gl=on \
     -serial mon:stdio \
-    -m 512
+    -m 2048 \
+    -enable-kvm \
+    -cpu host
