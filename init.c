@@ -153,8 +153,7 @@ int main(void) {
         NULL,
     };
     execve("/usr/bin/seatd-launch",
-           (char *[]){"/usr/bin/seatd-launch", "--", "/usr/bin/cage", "--",
-                      "/usr/bin/foot", "/bin/rlsh", NULL},
+           (char *[]){"/usr/bin/seatd-launch", "--", "/usr/bin/sway", NULL},
            envp);
     char buf[256];
     int n = snprintf(buf, sizeof(buf),

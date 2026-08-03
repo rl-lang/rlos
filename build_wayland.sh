@@ -22,13 +22,13 @@ for tool in pacman readelf find; do
     fi
 done
 
-CAGE_BIN="$WLROOT/usr/bin/cage"
+SWAY_BIN="$WLROOT/usr/bin/sway"
 FOOT_BIN="$WLROOT/usr/bin/foot"
 SEATD_BIN="$WLROOT/usr/bin/seatd"
 SEATD_LAUNCH_BIN="$WLROOT/usr/bin/seatd-launch"
 
-if [[ -f "$CAGE_BIN" && -f "$FOOT_BIN" ]]; then
-    echo "==> $CAGE_BIN and $FOOT_BIN already present, skipping pacman install"
+if [[ -f "$SWAY_BIN" && -f "$FOOT_BIN" ]]; then
+    echo "==> $SWAY_BIN and $FOOT_BIN already present, skipping pacman install"
 else
     echo "==> initializing isolated pacman root at $WLROOT"
     sudo mkdir -p "$WLROOT/var/lib/pacman"
@@ -51,17 +51,17 @@ EOF
         echo "note: pacman-key init skipped or already done"
     fi
 
-    echo "==> installing cage, foot, seatd, and wayland/EGL runtime libs into $WLROOT"
+    echo "==> installing sway, foot, seatd, and wayland/EGL runtime libs into $WLROOT"
     if ! sudo pacman -Sy --config "$PACCONF" --root "$WLROOT" --dbpath "$WLROOT/var/lib/pacman" \
-        --noconfirm cage foot wayland libxkbcommon mesa seatd ttf-dejavu systemd xkeyboard-config libx11; then
+        --noconfirm sway foot wayland libxkbcommon mesa seatd ttf-dejavu systemd xkeyboard-config libx11; then
         echo "error: pacman install into $WLROOT failed" >&2
         rm -f "$PACCONF"
         exit 1
     fi
     rm -f "$PACCONF"
 
-    if [[ ! -f "$CAGE_BIN" || ! -f "$FOOT_BIN" ]]; then
-        echo "error: cage or foot not found after install" >&2
+    if [[ ! -f "$SWAY_BIN" || ! -f "$FOOT_BIN" ]]; then
+        echo "error: sway or foot not found after install" >&2
         exit 1
     fi
 
@@ -69,9 +69,9 @@ EOF
     sudo chown -R "$(id -u):$(id -g)" "$WLROOT"
 fi
 
-echo "==> copying cage and foot into $ROOTFS"
+echo "==> copying sway and foot into $ROOTFS"
 mkdir -p "$ROOTFS/usr/bin" "$ROOTFS/usr/lib" "$ROOTFS/usr/share/foot"
-cp "$CAGE_BIN" "$ROOTFS/usr/bin/"
+cp "$SWAY_BIN" "$ROOTFS/usr/bin/"
 cp "$FOOT_BIN" "$ROOTFS/usr/bin/"
 [[ -d "$WLROOT/usr/share/foot" ]] && cp -r "$WLROOT/usr/share/foot"/. "$ROOTFS/usr/share/foot/" 2>/dev/null || true
 
@@ -106,8 +106,8 @@ copy_deps_from_root() {
     done
 }
 
-echo "==> copying cage's own deps"
-copy_deps_from_root "$CAGE_BIN" "$WLROOT"
+echo "==> copying sway's own deps"
+copy_deps_from_root "$SWAY_BIN" "$WLROOT"
 echo "==> copying foot's own deps"
 copy_deps_from_root "$FOOT_BIN" "$WLROOT"
 echo "==> copying rl's own Wayland/EGL deps"
@@ -118,7 +118,7 @@ echo "==> copying seatd-launch's own deps"
 [[ -f "$SEATD_LAUNCH_BIN" ]] && copy_deps_from_root "$SEATD_LAUNCH_BIN" "$WLROOT"
 
 echo "==> copying EGL vendor config and mesa's runtime-loaded drivers"
-# libEGL.so.1 (already copied above as a NEEDED dep of cage) is just a
+# libEGL.so.1 (already copied above as a NEEDED dep of sway) is just a
 # glvnd dispatch loader: at runtime it reads JSON ICD files under
 # /usr/share/glvnd/egl_vendor.d/ and dlopen()s the driver named inside
 # (libEGL_mesa.so.0), which then itself dlopen()s the Gallium/DRI module
@@ -258,6 +258,16 @@ mkdir -p "$ROOTFS/etc/xdg/foot"
 cat > "$ROOTFS/etc/xdg/foot/foot.ini" << 'EOF'
 [main]
 font=DejaVu Sans Mono:size=11
+EOF
+
+echo "==> writing default sway config"
+mkdir -p "$ROOTFS/etc/sway"
+cat > "$ROOTFS/etc/sway/config" << 'EOF'
+set $mod Mod4
+exec foot -e /bin/rlsh
+bindsym $mod+Return exec foot
+bindsym $mod+Shift+e exit
+output * bg #1d2021 solid_color
 EOF
 
 echo "==> done. rebuild disk.img to pick these up: ./build_disk.sh"
