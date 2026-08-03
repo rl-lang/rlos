@@ -41,13 +41,10 @@ echo "installing minimal /etc/passwd..."
 mkdir -p "$ROOTFS/etc"
 echo "root:x:0:0:root:/root:/bin/rlsh" > "$ROOTFS/etc/passwd"
 
-# echo "installing busybox shell..."
-# cp "$(command -v busybox)" "$ROOTFS/bin/"
-# ln -sf busybox "$ROOTFS/bin/sh"
-
 echo "installing rl..."
 RL_PATH="$(command -v rl)"
 cp "$RL_PATH" "$ROOTFS/bin/"
+ln -sf rlsh "$ROOTFS/bin/sh"
 
 echo "copying rl's runtime library dependencies..."
 DEPS="$(ldd "$RL_PATH" | awk '{print $3}' | grep '^/' || true)"
