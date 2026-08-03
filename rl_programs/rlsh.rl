@@ -4,6 +4,7 @@ get split, trim, starts_with, slice, index_of, format, is_empty, join from std::
 get len, arr_is_empty, arr_remove from std::array
 get path_filename from std::path
 get result_unwrap_or, is_err, result_unwrap_err from std::res
+get list_dir from std::fs
 
 fn main() {
     dec arr[string] Args = args()
@@ -28,6 +29,23 @@ fn main() {
         }
         exit(res.result_unwrap_or(0))
     }
+    dec arr[string] bin_p = list_dir("/bin/").result_unwrap_or([])
+    dec arr[string] usr_bin_p = list_dir("/usr/bin/").result_unwrap_or([])
+    dec set[string] bin_s = {}
+    dec set[string] usr_bin_s = {}
+
+    if !bin_p.arr_is_empty()? {
+        for item in bin_p {
+            item = item.slice(5, item.len() -1)?
+            bin_s = bin_s.std::collections::set_add(item)?
+        }
+    }
+    if !usr_bin_p.arr_is_empty()? {
+        for item in bin_p {
+            item = item.slice(5, item.len() -1)?
+            usr_bin_s = usr_bin_s.std::collections::set_add(item)?
+        }
+    }
 
     dec string user = with_exec("/bin/whoami", "").result_unwrap_or("unknown").trim()
     dec string host = with_exec("/bin/hostname", "").result_unwrap_or("unknown").trim()
@@ -35,7 +53,8 @@ fn main() {
 
     while (running) {
         dec string dir = cwd().result_unwrap_or("").path_filename()
-        if dir == "" or dir.is_empty() { dir = "/"
+        if dir == "" or dir.is_empty() {
+            dir = "/"
         }
 
         dec string prompt = format("[{}@{} <{}>]$ ", user, host, dir)
@@ -62,7 +81,11 @@ fn main() {
             } else {
                 cmd = input.slice(0, first_ws)?
                 if !cmd.starts_with("/bin/") and !cmd.starts_with("./") and !cmd.starts_with("/") {
-                    cmd = "/bin/{}".format(cmd)
+                    if bin_s.std::collections::set_contains(cmd)? {
+                      cmd = "/bin/{}".format(cmd)
+                    } else if usr_bin_s.std::collections::set_contains(cmd)? {
+                      cmd = "/usr/bin/{}".format(cmd)
+                    }
                 }
                 args = input.slice(first_ws + 1, input.len())?
             }
