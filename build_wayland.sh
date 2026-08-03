@@ -264,9 +264,31 @@ echo "==> writing default sway config"
 mkdir -p "$ROOTFS/etc/sway"
 cat > "$ROOTFS/etc/sway/config" << 'EOF'
 set $mod Mod4
+gaps inner 8
+gaps outer 4
+smart_gaps on
+default_border pixel 2
+default_floating_border pixel 2
+
 exec foot -e /bin/rlsh
+
+focus_follows_mouse yes
+
 bindsym $mod+Return exec foot
-bindsym $mod+Shift+e exit
+bindsym $mod+Shift+q kill
+
+# vim style focus keybinds
+bindsym $mod+j focus down
+bindsym $mod+k focus up
+bindsym $mod+h focus left
+bindsym $mod+l focus right
+
+# alternative arrow keys focus keybinds
+# bindsym $mod+Down focus down
+# bindsym $mod+Up focus up
+# bindsym $mod+Left focus left
+# bindsym $mod+Right focus right
+
 output * bg #1d2021 solid_color
 EOF
 
