@@ -1,10 +1,100 @@
+# Kernel output moved to kernel-images/<image>/bzImage, and the atom tree is
+# separate from rlos's. Both are build products, not sources.
+kernel-images/
 bzImage
-init
-rootfs/
-*.o
 linux/
+linux
+
+rl-lang/
+rl-lang
 iso/
 *.iso
+isostage/
+initramfs/
+initramfs.gz
+rl-bins/
+gcc
+gcc-dist/
+gcc-pkg/
+binutils
+binutils-dist/
+binutils-pkg/
+.gcc-conf.log
+.gcc-build.log
+.binutils-conf.log
+.binutils-build.log
+git-src
+git-dist/
+git-pkg/
+busybox-src/
+busybox-dist/
+busybox-dist.applets.conf
+rootfs.ext4
 x11root/
 wlroot/
 *.img
+
+# rlos-iso: vendored xorriso + OVMF vars copy from UEFI test runs
+host-tools/
+xorriso-src/
+ovmf_vars.fd
+
+# rlos-initramfs: static C binaries (rebuilt by compile_*.sh)
+rlos-initramfs/klogd
+x11-src/
+x11-prefix/
+x11-dist/
+
+w3m-src/
+w3m-dist/
+w3m-prefix/
+
+test/
+
+bluesz-dist/
+bluesz-src/
+bluesz-stage/
+
+rlos-disk/rootfs-staging/
+
+fw-src/
+gc-src/
+iwd-src/
+dbus-dist/
+fastfetch-dist/
+fw-dist/
+gc-dist/
+iwd-dist/
+iwd-prefix/
+nettools-dist/
+rlos-atom/bwrap-dist/
+rlos-atom/atom-rootfs/
+
+# Stale autoconf output from an out-of-tree XPM build. This repo has no
+# configure and no script reads these, so there is nothing to regenerate them
+# from - they are leftovers from cxpm/sxpm and safe to delete at any time.
+# Makefile stays bare so it also covers the per-directory ones.
+/config.h
+config.log
+config.status
+libtool
+stamp-h1
+xpm.pc
+/log
+Makefile
+.deps/
+
+# Built artefacts
+.kernel-build.lock
+x11-drv/build/
+
+# rlt --compile output - regenerate with `rlt --compile nano.rl`. The .rl
+# sources alongside them are the tracked inputs.
+rl_programs/nano/nano
+rl_programs/nano/nano.c
+rl_programs/nano/rl_runtime.c
+rl_programs/nano/rl_runtime.h
+rl_programs/nano/miniaudio.h
+
+rlos-initramfs/init
+rlos-atom/atom-rootfs.tar.gz

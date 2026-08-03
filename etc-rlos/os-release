@@ -1,0 +1,32 @@
+# /etc/os-release for rlOS.
+#
+# This is the file every tool asks to identify an operating system: fastfetch and
+# neofetch print it, systemd reads it, `lsb_release` wraps it, and most package
+# managers gate features on it. Its absence is why fastfetch's OS line was blank
+# in the very first run of the ATOM image - the module was configured correctly
+# and had nothing to read.
+#
+# The format is freedesktop.org's, which is the one fastfetch parses. Values are
+# quoted where they contain a space, per the same spec.
+NAME="rlOS"
+ID=rlos
+PRETTY_NAME="rlOS"
+VERSION_ID="0.1"
+VERSION="0.1 (development)"
+# Not derived from anything - this is a hand-written OS, not a rebuild of a
+# distribution, so there is no sensible upstream to point at.
+HOME_URL="https://example.invalid/rlos"
+SUPPORT_URL="https://example.invalid/rlos/issues"
+BUG_REPORT_URL="https://example.invalid/rlos/issues"
+
+# Pretty, set by /etc/hostname on a live boot.
+NAME="rlOS"
+
+# Like ID, but for the family a machine is most like. Not applicable here: rlOS is
+# its own thing and claiming to be Debian or Gentoo would be a lie that invites
+# the wrong assumptions about package management.
+ID_LIKE=""
+
+# Deliberately absent rather than wrong: no VERSION_CODENAME (this is not a
+# release with a marketing name), no SUPPORT_URL scheme games, no LOGO /
+# CPE / VARIANT fields.

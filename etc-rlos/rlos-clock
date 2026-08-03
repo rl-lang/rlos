@@ -1,0 +1,66 @@
+#!/bin/sh
+# rlos-clock - one line of i3status-format JSON for the i3 bar, once a second.
+#
+# i3bar does not need the i3status binary. It execs `status_command` through
+# /bin/sh (i3bar/src/child.c, and `strings` on the built binary shows
+# _PATH_BSHELL=/bin/sh, which busybox ash satisfies) and parses whatever comes
+# out as i3status JSON, re-reading on every new line. i3status is only one
+# possible producer of that format; a shell loop is a cheaper one.
+#
+# The keys used here - full_text, color, markup - are the ones i3bar's parser
+# actually accepts (i3bar/src/child.c): separator, full_text, short_text, color,
+# background, border, markup, align, min_width, name, instance.
+#
+# WHY A LOOP AND NOT `date` ONCE: i3bar only re-renders when the producer writes
+# a new line, so a one-shot command freezes the clock at whatever time it ran.
+#
+# WHY sleep 1 AND NOT A TIMER: `date` recomputes the zone on every call, so the
+# loop stays correct across a DST transition without this script knowing what DST
+# is. It also means changing TZ takes effect on the next tick, with no restart.
+#
+# TZ HANDLING. There is no zoneinfo database in this image, so libc parses TZ as
+# a POSIX TZ string rather than a zone name: TZ=Europe/Berlin degrades to offset
+# +0000 with the zone displayed as "Europe", because it cannot find the file. So
+# the order of preference is:
+#
+#   1. $TZ, if set                        - works fully once zoneinfo is staged
+#   2. /etc/timezone, if it exists        - the persistent per-install choice
+#   3. UTC                                - and says so, rather than lying
+#
+# UTC is a real answer here rather than a placeholder: the ISO has no battery
+# and no RTC worth trusting, and a clock confidently showing the wrong local time
+# is worse than one that shows UTC and labels it.
+set -u
+
+# /etc/timezone is the plain name only (e.g. Europe/Berlin). Read it at most once
+# a minute: it cannot change under a live ISO, and stat-ing it every second for
+# a file that will never move is work for nothing.
+_tz_cache=''
+_tz_cache_at=0
+
+resolve_tz() {
+    now="$(date +%s 2>/dev/null || echo 0)"
+    if [ -z "$_tz_cache" ] || [ "$((now - _tz_cache_at))" -ge 60 ]; then
+        if [ -r /etc/timezone ]; then
+            _tz_cache="$(cat /etc/timezone 2>/dev/null)"
+        fi
+        _tz_cache_at="$now"
+    fi
+    if [ -n "${TZ:-}" ]; then
+        printf '%s' "$TZ"
+    elif [ -n "$_tz_cache" ]; then
+        printf '%s' "$_tz_cache"
+    else
+        printf 'UTC'
+    fi
+}
+
+while :; do
+    tz="$(resolve_tz)"
+    TZ="$tz" export TZ
+    # %a %d %b gives "Mon 06 Oct" and %H:%M the time: a fixed-width, unambiguous
+    # format that needs no locale beyond C.UTF-8, which is what the session runs.
+    printf '[{"full_text":"%s","color":"#a6adc8","markup":"none"}]\n' \
+        "$(date '+%a %d %b  %H:%M' 2>/dev/null)"
+    sleep 1
+done
