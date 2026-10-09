@@ -35,8 +35,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# Sibling checkout by default: ~/dev/rl/rlos + ~/dev/rl/rl-lang
-RL_LANG_DIR="${RL_LANG_DIR:-$SCRIPT_DIR/../rl-lang}"
+RL_LANG_DIR="${RL_LANG_DIR:-$SCRIPT_DIR/rl-lang}"
 PROFILE="release"
 CLEAN_BINS=0
 JOBS=""
@@ -72,7 +71,7 @@ usage() {
   printf "  ${C_GREEN}--release${C_RESET}          Build with --release ${C_DIM}(default)${C_RESET}\n"
   printf "  ${C_GREEN}--dev-release${C_RESET}      Build with --profile dev-release ${C_DIM}(fast, bigger)${C_RESET}\n"
   printf "  ${C_GREEN}--dev${C_RESET}              Build without --release ${C_DIM}(debug)${C_RESET}\n"
-  printf "  ${C_GREEN}--rl-lang${C_RESET} ${C_CYAN}DIR${C_RESET}     rl-lang checkout ${C_DIM}(default: ../rl-lang)${C_RESET}\n"
+  printf "  ${C_GREEN}--rl-lang${C_RESET} ${C_CYAN}DIR${C_RESET}     rl-lang checkout ${C_DIM}(default: ./rl-lang)${C_RESET}\n"
   printf "  ${C_YELLOW}-j, --jobs${C_RESET} ${C_CYAN}N${C_RESET}       Number of parallel cargo jobs\n"
   printf "  ${C_RED}--clean-bins${C_RESET}       Remove rl-bins/rlos/ before building\n"
   printf "  ${C_BLUE}-h, --help${C_RESET}         Show this help\n"

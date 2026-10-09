@@ -37,7 +37,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-RL_LANG_DIR="${RL_LANG_DIR:-$ROOT/../rl-lang}"
+RL_LANG_DIR="${RL_LANG_DIR:-$ROOT/rl-lang}"
 OUT_DIR="$ROOT/rl-bins/rlos-atom"
 
 info() { echo "  $*"; }
@@ -56,7 +56,7 @@ Build the rlos-atom rl-lang toolchain (no-media: no audio, no GUI).
   ./build_atom_rl.sh              release build
   ./build_atom_rl.sh --dev        debug build
   -j, --jobs N                    parallel cargo jobs (default: nproc)
-  --rl-lang DIR                   rl-lang checkout (default: ../rl-lang)
+  --rl-lang DIR                   rl-lang checkout (default: ./rl-lang)
 USAGE
 }
 

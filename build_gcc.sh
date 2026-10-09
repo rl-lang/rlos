@@ -850,7 +850,7 @@ ok "$N_HDRS glibc headers (rl_runtime.c c11 + default, union bare-macro probe; a
 # which pulls in headers no non-audio program names - collecting them one
 # compile at a time is how this went wrong before (first pthread.h, then
 # assert.h). Take the whole closure in one pass instead.
-MINIAUDIO_H="$SCRIPT_DIR/../rl-lang/crates/rl-cc/runtime/miniaudio.h"
+MINIAUDIO_H="$SCRIPT_DIR/rl-lang/crates/rl-cc/runtime/miniaudio.h"
 if [[ -f "$MINIAUDIO_H" ]]; then
     printf '%s\n' '#define MINIAUDIO_IMPLEMENTATION' '#include "miniaudio.h"' \
       'int main(void){ return 0; }' > "$PROBE_DIR/ma.c"
