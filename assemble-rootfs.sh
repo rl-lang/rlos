@@ -179,6 +179,27 @@ printf '127.0.0.1\tlocalhost\n127.0.1.1\tsystem\n::1\tlocalhost ip6-localhost ip
 mkdir -p "$TARGET/home/user"
 
 # /etc/os-release: how this system identifies itself.
+#
+# Staged unconditionally, and asserted rather than staged-if-present, because the
+# absence of this file is invisible: fastfetch prints a correct logo next to a
+# blank line where the OS name belongs, because its `os` module is configured
+# correctly and has nothing to read. Nothing else complains.
+#
+# It is not fastfetch-specific either. systemd reads it, `lsb_release` wraps it,
+# and most package managers gate features on it, so it belongs in the base image
+# whether or not fastfetch was ever built.
+#
+# Same file, same install line as rlos-atom/build_atom_rootfs.sh - atom hard-fails
+# without it for exactly this reason, and the main image should not be the one
+# place where it is silently optional.
+OS_RELEASE_SRC="$SCRIPT_DIR/etc-rlos/os-release"
+if [[ -f "$OS_RELEASE_SRC" ]]; then
+    install -m 0644 "$OS_RELEASE_SRC" "$TARGET/etc/os-release"
+else
+    echo "error: etc-rlos/os-release missing - fastfetch's os module would print" >&2
+    echo "       nothing, and no tool can identify this OS" >&2
+    exit 1
+fi
 
 # $HOME/scripts: worked examples, shipped as source and run in place.
 #

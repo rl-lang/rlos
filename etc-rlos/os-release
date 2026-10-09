@@ -19,9 +19,6 @@ HOME_URL="https://example.invalid/rlos"
 SUPPORT_URL="https://example.invalid/rlos/issues"
 BUG_REPORT_URL="https://example.invalid/rlos/issues"
 
-# Pretty, set by /etc/hostname on a live boot.
-NAME="rlOS"
-
 # Like ID, but for the family a machine is most like. Not applicable here: rlOS is
 # its own thing and claiming to be Debian or Gentoo would be a lie that invites
 # the wrong assumptions about package management.
