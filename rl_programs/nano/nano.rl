@@ -1047,7 +1047,7 @@ fn draw(Editor ed)
         term_print(m1.concat(" ".repeat(_pad)))
 
         dec m2_plain = " Y Yes   N No   C Cancel"
-        dec m2 = "\e[30;47m Y\e[1;40;37m Yes  \e[1;30;47m N\e[1;40;37m No  \e[1;30;47m^C\e[1;40;37m Cancel"
+        dec m2 = "\e[30;47m Y\e[0;1;37m Yes  \e[1;30;47m N\e[0;1;37m No  \e[1;30;47m^C\e[0;1;37m Cancel"
         term_move(0, rows - 1)
         dec int _pad2 = cols - len(m2_plain).result_unwrap_or(0)
         term_print(m2.concat(" ".repeat(_pad2)))
@@ -1057,7 +1057,7 @@ fn draw(Editor ed)
         term_move(0, rows - 2)
         dec plain_hint = "^S Save  ^X Quit  ^A Start of Line  ^E End of Line ^K Cut ^U Paste"
         dec _pad = cols - len(plain_hint).result_unwrap_or(0)
-        dec string hint = "\e[1;30;47m^S\e[1;40;37m Save  \e[1;30;47m^X\e[1;40;37m Quit  \e[1;30;47m^A\e[1;40;37m Start of Line  \e[1;30;47m^E\e[1;40;37m End of line \e[1;30;47m^Y\e[1;40;37m PageUp \e[1;30;47m^V\e[1;40;37m PageDown  \e[1;30;47m^K\e[1;40;37m Cut  \e[1;30;47m^U\e[1;40;37m Paste"
+        dec string hint = "\e[1;30;47m^S\e[0;1;37m Save  \e[1;30;47m^X\e[0;1;37m Quit  \e[1;30;47m^A\e[0;1;37m Start of Line  \e[1;30;47m^E\e[0;1;37m End of line \e[1;30;47m^Y\e[0;1;37m PageUp \e[1;30;47m^V\e[0;1;37m PageDown  \e[1;30;47m^K\e[0;1;37m Cut  \e[1;30;47m^U\e[0;1;37m Paste"
         term_print(hint.concat(" ".repeat(_pad)))
 
         if ed.status_timer > 0
