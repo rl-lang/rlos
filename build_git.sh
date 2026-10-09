@@ -52,6 +52,10 @@ fail()  { printf "${C_RED}  [FAIL]${C_RESET} %s\n" "$*"; }
 warn()  { printf "${C_YELLOW}  [WARN]${C_RESET} %s\n" "$*"; }
 header(){ printf "\n${C_BOLD}${C_CYAN}:: %s${C_RESET}\n" "$*"; }
 
+# Sourced after the message helpers so pins_clone_hint can report through fail().
+# shellcheck source=pins.sh
+source "$SCRIPT_DIR/pins.sh"
+
 usage() {
   printf "\n"
   printf "${C_BOLD}Usage:${C_RESET} ${C_CYAN}build_git.sh${C_RESET} [OPTIONS]\n"
@@ -100,7 +104,10 @@ info "jobs:   ${C_BOLD}${JOBS:-auto}${C_RESET}"
 
 header "Checking git tree"
 if [[ ! -f "$GIT_SRC/Makefile" ]]; then
-  fail "no git tree at '$GIT_SRC' - symlink it first: ln -s ~/dev/c/git git-src"
+  # This one had no clone URL at all before, only a reference to a path on the
+  # original author's machine. Generated from pins.lock now.
+  pins_clone_hint git "$GIT_SRC"
+  fail "build_git.sh needs a git checkout ($GIT_TAG). Symlink one at ./git-src and re-run."
   exit 1
 fi
 if [[ -d "$GIT_SRC/.git" ]]; then

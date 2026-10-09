@@ -63,6 +63,9 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Sourced after the message helpers so pin failures report through die().
+# shellcheck source=pins.sh
+source "$ROOT/pins.sh"
 SRC="$ROOT/w3m-src"
 PREFIX="$ROOT/w3m-prefix"
 DIST="$ROOT/w3m-dist"
@@ -81,17 +84,22 @@ info()  { printf '%s  %s%s\n' "$GRN" "$1" "$RST"; }
 warn()  { printf '%s  %s%s\n' "$YLW" "$1" "$RST"; }
 die()   { printf '%serror:%s %s\n' "$RED" "$RST" "$1" >&2; exit 1; }
 
+# fetch <url> <out> [pin-key] - download unless cached, then verify.
+# With a pin-key the file is checked against pins.lock whether cached or fresh,
+# so a truncated cache entry fails here rather than inside a later configure.
 fetch() {
-    local url="$1" out="$2"
+    local url="$1" out="$2" key="${3:-}"
     command -v curl >/dev/null || die "curl not found"
     if [ -s "$out" ]; then
         info "cached $(basename "$out")"
-        return 0
+    else
+        info "fetching $(basename "$out")"
+        curl -fsSL --retry 3 --max-time 300 -o "$out.part" "$url" \
+            || die "download failed: $url"
+        mv "$out.part" "$out"
     fi
-    info "fetching $(basename "$out")"
-    curl -fsSL --retry 3 --max-time 300 -o "$out.part" "$url" \
-        || die "download failed: $url"
-    mv "$out.part" "$out"
+    [ -n "$key" ] && pins_verify "$out" "$key"
+    return 0
 }
 
 # Unpack a GitHub tag tarball and echo the directory it created.
@@ -120,7 +128,7 @@ mkdir -p "$SRC" "$GC_SRC"
 # Boehm GC - static only
 # ---------------------------------------------------------------------------
 header "boehm gc (static, required by w3m)"
-fetch "$GC_URL" "$GC_SRC/bdwgc-${GC_VER}.tar.gz"
+fetch "$GC_URL" "$GC_SRC/bdwgc-${GC_VER}.tar.gz" "bdwgc"
 rm -rf "$GC_PREFIX"
 mkdir -p "$GC_PREFIX"
 GC_SRCDIR="$(unpack "$GC_SRC/bdwgc-${GC_VER}.tar.gz" "$GC_SRC/gc-x")"
@@ -154,7 +162,7 @@ info "libgc.a built (static only, $(du -h "$GC_PREFIX/lib/libgc.a" | cut -f1))"
 # w3m
 # ---------------------------------------------------------------------------
 header "w3m $W3M_VER"
-fetch "$W3M_URL" "$SRC/w3m-${W3M_VER}.tar.gz"
+fetch "$W3M_URL" "$SRC/w3m-${W3M_VER}.tar.gz" "w3m"
 rm -rf "$DIST" "$PREFIX"
 mkdir -p "$DIST"
 W3M_SRCDIR="$(unpack "$SRC/w3m-${W3M_VER}.tar.gz" "$SRC/w3m-x")"

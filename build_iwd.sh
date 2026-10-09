@@ -39,6 +39,9 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Sourced after the message helpers so pin failures report through die().
+# shellcheck source=pins.sh
+source "$ROOT/pins.sh"
 SRC="$ROOT/iwd-src"
 PREFIX="$ROOT/iwd-prefix"
 DIST="$ROOT/iwd-dist"
@@ -54,14 +57,22 @@ info()  { printf '%s  %s%s\n' "$GRN" "$1" "$RST"; }
 warn()  { printf '%s  %s%s\n' "$YLW" "$1" "$RST"; }
 die()   { printf '%serror:%s %s\n' "$RED" "$RST" "$1" >&2; exit 1; }
 
+# fetch <url> <out> [pin-key] - download unless cached, then verify.
+# With a pin-key the file is checked against pins.lock whether it was just
+# downloaded or already cached, so a truncated cache entry is caught here
+# rather than much later in autoreconf.
 fetch() {
-    local url="$1" out="$2"
-    [ -s "$out" ] && { info "cached $(basename "$out")"; return; }
-    command -v curl >/dev/null || die "curl not found"
-    info "fetching $(basename "$out")"
-    curl -fsSL --retry 3 --max-time 300 -o "$out.part" "$url" \
-        || die "download failed: $url"
-    mv "$out.part" "$out"
+    local url="$1" out="$2" key="${3:-}"
+    [ -s "$out" ] || {
+        command -v curl >/dev/null || die "curl not found"
+        info "fetching $(basename "$out")"
+        curl -fsSL --retry 3 --max-time 300 -o "$out.part" "$url" \
+            || die "download failed: $url"
+        mv "$out.part" "$out"
+    }
+    [ -s "$out" ] && info "cached $(basename "$out")"
+    [ -n "$key" ] && pins_verify "$out" "$key"
+    return 0
 }
 
 rm -rf "$DIST"
@@ -71,7 +82,7 @@ mkdir -p "$SRC" "$DIST"
 # libnl-3
 # ---------------------------------------------------------------------------
 header "libnl $NL_VER (iwd's netlink dependency)"
-fetch "$NL_URL" "$SRC/libnl.tar.gz"
+fetch "$NL_URL" "$SRC/libnl.tar.gz" "libnl"
 rm -rf "$SRC/libnl-$NL_VER" && tar -C "$SRC" -xzf "$SRC/libnl.tar.gz"
 
 # A fresh prefix every time. Reusing one would let a stale libnl from an earlier
@@ -104,7 +115,7 @@ done
 # iwd
 # ---------------------------------------------------------------------------
 header "iwd $IWD_VER"
-fetch "$IWD_URL" "$SRC/iwd.tar.xz"
+fetch "$IWD_URL" "$SRC/iwd.tar.xz" "iwd"
 rm -rf "$SRC/iwd-$IWD_VER" && tar -C "$SRC" -xJf "$SRC/iwd.tar.xz"
 
 cd "$SRC/iwd-$IWD_VER"

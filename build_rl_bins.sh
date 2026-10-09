@@ -61,6 +61,10 @@ fail()  { printf "${C_RED}  [FAIL]${C_RESET} %s\n" "$*"; }
 warn()  { printf "${C_YELLOW}  [WARN]${C_RESET} %s\n" "$*"; }
 header(){ printf "\n${C_BOLD}${C_CYAN}:: %s${C_RESET}\n" "$*"; }
 
+# Sourced after the message helpers so a pin warning reports through warn().
+# shellcheck source=pins.sh
+source "$SCRIPT_DIR/pins.sh"
+
 usage() {
   printf "\n"
   printf "${C_BOLD}Usage:${C_RESET} ${C_CYAN}build_rl_bins.sh${C_RESET} [OPTIONS]\n"
@@ -116,8 +120,13 @@ fi
 
 if [ ! -f "$RL_LANG_DIR/Cargo.toml" ]; then
   fail "no Cargo.toml in '$RL_LANG_DIR' (use --rl-lang DIR)"
+  fail "  If rl-lang is not at ./rl-lang, symlink it there or pass --rl-lang DIR."
   exit 1
 fi
+# Advisory, not fatal: rl-lang moves fast and you may be mid-development. But
+# say so, because building against a commit other than the pinned one is the
+# kind of difference that shows up later as an unexplained image difference.
+pins_warn_drift "$RL_LANG_DIR" rl-lang
 if ! command -v cargo > /dev/null 2>&1; then
   fail "cargo not found on PATH"
   exit 1

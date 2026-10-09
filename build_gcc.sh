@@ -45,6 +45,12 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The rl-lang checkout this gcc must agree with. Overridable so that
+# `build_rl_bins.sh --rl-lang DIR` and this script can be pointed at the same
+# tree; without the override, pointing build_rl_bins.sh elsewhere while leaving
+# the default here builds a gcc against one rl-lang's headers and an image with
+# another rl-lang's binaries.
+RL_LANG_DIR="${RL_LANG_DIR:-$SCRIPT_DIR/rl-lang}"
 # Local checkout via symlink: rlos/gcc -> your gcc tree.
 GCC_PIN="78d4ac73dd391005b895a6148cd9831e28e1208b" # releases/gcc-16.2.0
 GCC_DIST="$SCRIPT_DIR/gcc-dist"
@@ -74,6 +80,10 @@ ok()    { printf "${C_GREEN}  [ OK ]${C_RESET} %s\n" "$*"; }
 fail()  { printf "${C_RED}  [FAIL]${C_RESET} %s\n" "$*"; }
 warn()  { printf "${C_YELLOW}  [WARN]${C_RESET} %s\n" "$*"; }
 header(){ printf "\n${C_BOLD}${C_CYAN}:: %s${C_RESET}\n" "*"; }
+
+# Sourced after the message helpers so pins_clone_hint can report through fail().
+# shellcheck source=pins.sh
+source "$SCRIPT_DIR/pins.sh"
 
 # Follows a SONAME symlink chain to a real file, the way the loader will.
 # Defined up here because both the runtime-dependency closure below and the
@@ -143,9 +153,10 @@ info "jobs:   ${C_BOLD}${JOBS:-auto}${C_RESET}"
 
 header "Checking gcc tree"
 if [[ ! -f "$GCC_SRC/configure" ]]; then
-  fail "no gcc tree at '$GCC_SRC' - symlink it first:"
-  fail "  git clone --depth 1 --branch releases/gcc-16.2.0 git@github.com:gcc-mirror/gcc.git ~/dev/c/gcc-16.2.0"
-  fail "  ln -s ~/dev/c/gcc-16.2.0 gcc"
+  # Hint generated from pins.lock, so the suggested clone always names the pinned
+  # commit rather than a branch tip that may have moved since this was written.
+  pins_clone_hint gcc "$GCC_SRC"
+  fail "build_gcc.sh needs a gcc checkout. Symlink one at ./gcc and re-run."
   exit 1
 fi
 if [[ -d "$GCC_SRC/.git" ]]; then
@@ -773,9 +784,24 @@ if [[ -x "$SCRIPT_DIR/rl-bins/rlos/rlt" ]]; then
     cp "$SCRIPT_DIR/rl_programs/hostname.rl" "$PROBE_DIR/probe.rl"
     ( cd "$PROBE_DIR" && "$SCRIPT_DIR/rl-bins/rlos/rlt" --runtime probe.rl > /dev/null 2>&1 )
 else
-    warn "rl-bins/rlos/rlt absent - using rl_runtime.c from rl_programs/nano/"
-    cp "$SCRIPT_DIR/rl_programs/nano/rl_runtime.c" "$PROBE_DIR/" 2>/dev/null || true
-    cp "$SCRIPT_DIR/rl_programs/nano/rl_runtime.h" "$PROBE_DIR/" 2>/dev/null || true
+    # Fallback for a tree that was built before rl_programs/nano/*.c became
+    # generated output. Those files are gitignored (rlt --compile produces
+    # them), so on a fresh clone they are absent too and this fallback cannot
+    # rescue the build - say so plainly instead of letting the header closure
+    # come back empty and failing several steps later as "empty header closure",
+    # which points at the probe rather than at the missing prerequisite.
+    if [[ -f "$SCRIPT_DIR/rl_programs/nano/rl_runtime.c" ]]; then
+        warn "rl-bins/rlos/rlt absent - using rl_runtime.c from rl_programs/nano/"
+        cp "$SCRIPT_DIR/rl_programs/nano/rl_runtime.c" "$PROBE_DIR/" || true
+        cp "$SCRIPT_DIR/rl_programs/nano/rl_runtime.h" "$PROBE_DIR/" 2>/dev/null || true
+    else
+        fail "rlt not found and no fallback runtime source."
+        fail "  Build it first:  ./build_rl_bins.sh   (needs rl-lang at $RL_LANG_DIR)"
+        fail "  It produces rl-bins/rlos/rlt, which generates the rl_runtime.c"
+        fail "  this probe needs. The files under rl_programs/nano/ are gitignored"
+        fail "  build output, so there is nothing to fall back to on a fresh clone."
+        exit 1
+    fi
 fi
 # -H, not -M. -M emits the dependency list the preprocessor computes, which
 # misses headers reached only under a conditional macro; -H reports every file
@@ -850,7 +876,7 @@ ok "$N_HDRS glibc headers (rl_runtime.c c11 + default, union bare-macro probe; a
 # which pulls in headers no non-audio program names - collecting them one
 # compile at a time is how this went wrong before (first pthread.h, then
 # assert.h). Take the whole closure in one pass instead.
-MINIAUDIO_H="$SCRIPT_DIR/rl-lang/crates/rl-cc/runtime/miniaudio.h"
+MINIAUDIO_H="$RL_LANG_DIR/crates/rl-cc/runtime/miniaudio.h"
 if [[ -f "$MINIAUDIO_H" ]]; then
     printf '%s\n' '#define MINIAUDIO_IMPLEMENTATION' '#include "miniaudio.h"' \
       'int main(void){ return 0; }' > "$PROBE_DIR/ma.c"

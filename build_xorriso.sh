@@ -54,6 +54,10 @@ fail()  { printf "${C_RED}  [FAIL]${C_RESET} %s\n" "$*"; }
 warn()  { printf "${C_YELLOW}  [WARN]${C_RESET} %s\n" "$*"; }
 header(){ printf "\n${C_BOLD}${C_CYAN}:: %s${C_RESET}\n" "*"; }
 
+# Sourced after the message helpers so pin failures report through fail().
+# shellcheck source=pins.sh
+source "$SCRIPT_DIR/pins.sh"
+
 usage() {
   printf "\n"
   printf "${C_BOLD}Usage:${C_RESET} ${C_CYAN}build_xorriso.sh${C_RESET} [OPTIONS]\n"
@@ -124,6 +128,10 @@ if [[ ! -f "$TARBALL" ]]; then
 else
   ok "tarball already present, skipping download"
 fi
+# Verified whether cached or freshly downloaded. xorriso builds into the ISO
+# tooling, so a corrupted tarball would surface as a confusing mkisofs failure
+# much later.
+pins_verify "$TARBALL" xorriso
 
 header "Building xorriso (prefix = host-tools, host untouched)"
 rm -rf "$XORRISO_SRC/build"

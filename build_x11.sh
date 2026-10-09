@@ -163,8 +163,11 @@ IMLIB2_LOADERS_KEEP="gif jpeg png"
 # (fetching https images, multi-monitor) that mean nothing here. help=1 compiles
 # the keybind reference INTO the binary, which matters because this image ships
 # no man pages and no `man`.
-FEH_REF="master"
-FEH_URL="https://codeload.github.com/derf/feh/tar.gz/refs/heads/${FEH_REF}"
+# Pinned to a release tag, not master: the sha256 in pins.lock is what makes
+# that safe. Note this is a CHANGE from the master snapshot this image was last
+# built from (see the feh note in pins.lock).
+FEH_REF="3.13.1"
+FEH_URL="https://codeload.github.com/derf/feh/tar.gz/refs/tags/${FEH_REF}"
 FEH_MAKE_FLAGS="curl=0 xinerama=0 exif=0 magic=0 install_fonts=0 help=1"
 
 # ttyrec/ttyplay: terminal session recorder. No X, no GL, only a tty, so it is
@@ -251,10 +254,10 @@ SDL2_MAJOR="2.32.8"
 XPM_VER="3.5.19"
 XPM_URL="http://deb.debian.org/debian/pool/main/libx/libxpm/libxpm_${XPM_VER}.orig.tar.gz"
 
-# Pinned by commit: xfiles has no tagged releases, and a branch that moves under
-# a build is worse than one that fails. This is the state of master that builds.
+# Pinned by commit in pins.lock. xfiles has no usable tagged releases - the pin
+# is 100 commits past v1.1.1, carrying scrollmode, pgup/pgdown and focus fixes
+# this image was built against, so the tag would be a regression.
 XFILES_REPO="https://github.com/phillbush/xfiles.git"
-XFILES_REF="master"
 XFILES_SRC="$X11_SRC/xfiles"
 
 # --- i3 and the three libraries it needs that the host lacks -------------------
@@ -326,6 +329,10 @@ ok()    { printf "${C_GREEN}  [ OK ]${C_RESET} %s\n" "$*"; }
 fail()  { printf "${C_RED}  [FAIL]${C_RESET} %s\n" "$*"; }
 warn()  { printf "${C_YELLOW}  [WARN]${C_RESET} %s\n" "$*"; }
 header(){ printf "\n${C_BOLD}${C_CYAN}:: %s${C_RESET}\n" "*"; }
+
+# Sourced after the colour helpers so pins_verify can report failures through
+# fail() rather than raw stderr. See pins.lock for what is pinned and why.
+source "$SCRIPT_DIR/pins.sh"
 
 usage() {
   printf "\n"
@@ -408,16 +415,24 @@ fi
 
 mkdir -p "$X11_SRC" "$X11_PREFIX"
 
-# fetch <url> <dest> - download unless already present
+# fetch <url> <dest> [pin-key] - download unless already present
+#
+# With a pin-key, the file is verified against pins.lock whether it was just
+# downloaded or already cached. Verifying a cache hit matters as much as
+# verifying a fresh download: a truncated or edited tarball in x11-src/ would
+# otherwise be reused silently, and the build would fail hours later in a
+# compiler with a message that points nowhere near the real cause.
 fetch() {
-  local url="$1" dest="$2"
+  local url="$1" dest="$2" key="${3:-}"
   if [ -f "$dest" ]; then
     info "have $(basename "$dest")"
-    return 0
+  else
+    info "fetching $(basename "$dest")"
+    curl -fL --retry 3 --retry-delay 2 --max-time 300 -o "$dest" "$url" \
+      || { fail "download failed: $url"; exit 1; }
   fi
-  info "fetching $(basename "$dest")"
-  curl -fL --retry 3 --retry-delay 2 --max-time 300 -o "$dest" "$url" \
-    || { fail "download failed: $url"; exit 1; }
+  [ -n "$key" ] && pins_verify "$dest" "$key"
+  return 0
 }
 
 # run_quiet <cmd...> - run quietly, but print the tail on failure. Without this
@@ -436,7 +451,7 @@ run_quiet() {
 }
 
 header "Xorg server ${XORG_SERVER_VER} (GLX/glamor/DRI off)"
-fetch "$XORG_SERVER_URL" "$X11_SRC/xorg-server-${XORG_SERVER_VER}.tar.xz"
+fetch "$XORG_SERVER_URL" "$X11_SRC/xorg-server-${XORG_SERVER_VER}.tar.xz" "xorg-server"
 if [ ! -d "$X11_SRC/xorg-server-${XORG_SERVER_VER}" ]; then
   tar -xf "$X11_SRC/xorg-server-${XORG_SERVER_VER}.tar.xz" -C "$X11_SRC"
 fi
@@ -473,7 +488,7 @@ XORG_BIN="$X11_SRC/xorg-pkg/usr/bin/Xorg"
 info "$(du -h "$XORG_BIN" | cut -f1)  $XORG_BIN"
 
 header "xf86-video-fbdev ${FBDEV_VER} (the fbdev DDX)"
-fetch "$FBDEV_URL" "$X11_SRC/xf86-video-fbdev-${FBDEV_VER}.tar.xz"
+fetch "$FBDEV_URL" "$X11_SRC/xf86-video-fbdev-${FBDEV_VER}.tar.xz" "xf86-video-fbdev"
 if [ ! -d "$X11_SRC/xf86-video-fbdev-${FBDEV_VER}" ]; then
   tar -xf "$X11_SRC/xf86-video-fbdev-${FBDEV_VER}.tar.xz" -C "$X11_SRC"
 fi
@@ -597,11 +612,10 @@ PCEOF
 ok "yajl built"
 
 # --- xcb-util-xrm ---
-if [ ! -d "$X11_SRC/xcb-util-xrm/.git" ]; then
-  info "cloning xcb-util-xrm"
-  git clone --depth 1 "$XCBXRM_URL" "$X11_SRC/xcb-util-xrm" \
-    || { fail "xcb-util-xrm clone failed"; exit 1; }
-fi
+# Pinned commit. Not --depth 1: a shallow clone only carries the branch tip, so
+# it cannot check out an arbitrary SHA. pins_clone clones full history and
+# fetches the pinned commit if needed, then asserts HEAD matches the pin.
+pins_clone "$XCBXRM_URL" "$X11_SRC/xcb-util-xrm" xcb-util-xrm
 run_quiet gcc -shared -fPIC -O2 -I "$X11_SRC/xcb-util-xrm/include" -I "$X11_SRC/xcb-util-xrm/src" \
   $(pkg-config --cflags xcb xcb-aux) -Wl,-soname,libxcb-xrm.so.0 \
   -o "$X11_PREFIX/usr/lib64/libxcb-xrm.so.0.0.0" "$X11_SRC/xcb-util-xrm/src/"*.c \
@@ -629,11 +643,10 @@ ok "xcb-util-xrm built"
 # --- libstartup-notification ---
 # The one of the three that builds with autotools, because unlike the others it
 # needs no xorg-macros.
-if [ ! -d "$X11_SRC/libstartup-notification/.git" ]; then
-  info "cloning libstartup-notification"
-  git clone --depth 1 --recursive "$LIBSN_URL" "$X11_SRC/libstartup-notification" \
-    || { fail "libstartup-notification clone failed"; exit 1; }
-fi
+# Pinned commit, and --recursive is preserved on both the clone and the fetch:
+# this repo has submodules, so a shallow non-recursive clone cannot build, and
+# a fetch that skips them leaves the working tree without them too.
+pins_clone "$LIBSN_URL" "$X11_SRC/libstartup-notification" libstartup-notification --recursive
 ( cd "$X11_SRC/libstartup-notification" && \
   run_quiet ./autogen.sh --prefix="$X11_PREFIX" --libdir="$X11_PREFIX/usr/lib64" && \
   run_quiet make -j"$(nproc)" && \
@@ -725,7 +738,7 @@ ok "no i3 binary references the build prefix (DT_NEEDED, RPATH and RUNPATH all c
 ok "i3 built ($(du -h "$I3_SRC/build/i3" | cut -f1)), i3bar and i3-msg too"
 
 header "mlterm ${MLTERM_VER}"
-fetch "$MLTERM_URL" "$X11_SRC/mlterm-${MLTERM_VER}.tar.gz"
+fetch "$MLTERM_URL" "$X11_SRC/mlterm-${MLTERM_VER}.tar.gz" "mlterm"
 # codeload names the top dir after the TAG (<name>-<tag>), not the version:
 # rel-3_9_1 unpacks as mlterm-rel-3_9_1. Strip it into $MLTERM_SRC instead of
 # guessing, so the version can change without this silently unpacking a tree
@@ -900,7 +913,7 @@ HOST_XKB_LOCALE_DIR="/usr/share/X11/locale"
 XKB_VER="2.48"
 XKB_URL="https://www.x.org/releases/individual/data/xkeyboard-config/xkeyboard-config-${XKB_VER}.tar.xz"
 command -v xkbcomp > /dev/null 2>&1 || { fail "xkbcomp not on host"; exit 1; }
-fetch "$XKB_URL" "$X11_SRC/xkeyboard-config-${XKB_VER}.tar.xz"
+fetch "$XKB_URL" "$X11_SRC/xkeyboard-config-${XKB_VER}.tar.xz" "xkeyboard-config"
 XKB_TREE="$X11_SRC/xkeyboard-config-${XKB_VER}"
 if [ ! -f "$XKB_TREE/meson.build" ]; then
   tar -xf "$X11_SRC/xkeyboard-config-${XKB_VER}.tar.xz" -C "$X11_SRC"
@@ -1036,7 +1049,7 @@ info "modules: $(find "$X11_DIST/usr/lib64/xorg/modules" -name '*.so' | wc -l) .
 # libinput.so.10 itself. Switching them off is the difference between a
 # four-library closure and a nine-library one.
 header "libinput ${LIBINPUT_VER}"
-fetch "$LIBINPUT_URL" "$X11_SRC/libinput-${LIBINPUT_VER}.tar.gz"
+fetch "$LIBINPUT_URL" "$X11_SRC/libinput-${LIBINPUT_VER}.tar.gz" "libinput"
 if [ ! -d "$X11_SRC/libinput-${LIBINPUT_VER}" ]; then
   tar -xf "$X11_SRC/libinput-${LIBINPUT_VER}.tar.gz" -C "$X11_SRC"
 fi
@@ -1061,7 +1074,7 @@ header "eudev ${EUDEV_VER} (required by libinput)"
 # endpoint for this project answers with an HTML challenge page rather than a
 # tarball, and Gentoo's distfiles mirror has no eudev; codeload's pinned tag is
 # what resolves.
-fetch "$EUDEV_URL" "$X11_SRC/eudev-${EUDEV_VER}.tar.gz"
+fetch "$EUDEV_URL" "$X11_SRC/eudev-${EUDEV_VER}.tar.gz" "eudev"
 if [ ! -d "$X11_SRC/eudev-${EUDEV_VER}" ]; then
   tar -xf "$X11_SRC/eudev-${EUDEV_VER}.tar.gz" -C "$X11_SRC"
 fi
@@ -1129,7 +1142,7 @@ XORG_INC="$X11_SRC/xorg-pkg/usr/include/xorg"
 XORG_CFG="$X11_SRC/xorg-server-${XORG_SERVER_VER}/build/include/xorg-config.h"
 [ -d "$XORG_INC" ] || { fail "xorg headers missing at $XORG_INC"; exit 1; }
 [ -f "$XORG_CFG" ] || { fail "xorg build config missing at $XORG_CFG"; exit 1; }
-fetch "$LIBINPUT_DRV_URL" "$X11_SRC/xf86-input-libinput-${LIBINPUT_DRV_VER}.tar.xz"
+fetch "$LIBINPUT_DRV_URL" "$X11_SRC/xf86-input-libinput-${LIBINPUT_DRV_VER}.tar.xz" "xf86-input-libinput"
 if [ ! -d "$X11_SRC/xf86-input-libinput-${LIBINPUT_DRV_VER}" ]; then
   tar -xf "$X11_SRC/xf86-input-libinput-${LIBINPUT_DRV_VER}.tar.xz" -C "$X11_SRC"
 fi
@@ -1436,7 +1449,7 @@ fi
 ok "fonts staged ($(du -sh "$X11_DIST/usr/share/fonts" | cut -f1))"
 
 header "Cursor theme: ${BIBATA_THEME}"
-fetch "$BIBATA_URL" "$X11_SRC/${BIBATA_THEME}.tar.xz"
+fetch "$BIBATA_URL" "$X11_SRC/${BIBATA_THEME}.tar.xz" "Bibata-Modern-Ice"
 BIBATA_TMP="$X11_SRC/bibata-x"
 rm -rf "$BIBATA_TMP" && mkdir -p "$BIBATA_TMP"
 tar -xf "$X11_SRC/${BIBATA_THEME}.tar.xz" -C "$BIBATA_TMP" --strip-components=1
@@ -1748,7 +1761,7 @@ if [ ! -f "$SUDO_TARBALL" ]; then
     cp "/var/cache/distfiles/sudo-${SUDO_VER}.tar.gz" "$SUDO_TARBALL"
     ok "sudo tarball taken from the host distfile cache"
   else
-    fetch "$SUDO_URL" "$SUDO_TARBALL"
+    fetch "$SUDO_URL" "$SUDO_TARBALL" "sudo"
   fi
 fi
 if [ ! -d "$X11_SRC/sudo-${SUDO_VER}" ]; then
@@ -1834,12 +1847,11 @@ XAUTH_REPO="https://gitlab.freedesktop.org/xorg/app/xauth.git"
 # extra host package to require). Master's meson.build needs only the six
 # pkg-config modules already checked above, which this host has.
 #
-# Reproducibility cost of tracking master rather than a release: accepted
-# knowingly. The build verifies the result actually generates a cookie, so a
-# broken master cannot silently ship.
-XAUTH_REF="master"
-
-header "xauth ${XAUTH_REF} (MIT-MAGIC-COOKIE-1, replaces Xorg -ac)"
+# Pinned by commit in pins.lock, not by branch: xauth has no release tag, and
+# master moving under a build is worse than a build that fails. The commit is
+# the tip of master as of the pin; the build still verifies the result actually
+# generates a cookie, so a wrong pin cannot silently ship.
+header "xauth (MIT-MAGIC-COOKIE-1, replaces Xorg -ac)"
 XAUTH_PKG_MODS="x11 xau xext xmuu xproto xtrans"
 MISSING_XA=""
 for m in $XAUTH_PKG_MODS; do
@@ -1852,17 +1864,7 @@ if [ -n "$MISSING_XA" ]; then
   exit 1
 fi
 
-if [ ! -d "$X11_SRC/xauth/.git" ]; then
-  info "cloning xauth"
-  git clone --depth 1 --branch "$XAUTH_REF" "$XAUTH_REPO" "$X11_SRC/xauth" \
-    || { fail "xauth clone failed"; exit 1; }
-else
-  # Re-point an existing checkout at the configured ref, so switching between
-  # the tag and master does not need a manual rm.
-  ( cd "$X11_SRC/xauth" && git fetch --depth 1 origin "$XAUTH_REF" > /dev/null 2>&1 \
-    && git checkout -q FETCH_HEAD ) \
-    || { fail "xauth checkout of $XAUTH_REF failed"; rm -rf "$X11_SRC/xauth"; exit 1; }
-fi
+pins_clone "$XAUTH_REPO" "$X11_SRC/xauth" xauth
 XAUTH_SRC="$X11_SRC/xauth"
 info "xauth at $(cd "$XAUTH_SRC" && git rev-parse --short HEAD)"
 
@@ -1965,7 +1967,7 @@ header "giflib ${GIFLIB_VER} (host has none; Imlib2's GIF loader needs it)"
 # Only install-lib is invoked, deliberately. Plain `make install` would also
 # install gif2rgb, giftext, giftext2gif, gifbuild and giffix - five utilities for
 # authoring GIFs that a media *viewer* has no use for.
-fetch "$GIFLIB_URL" "$X11_SRC/giflib-${GIFLIB_VER}.tar.gz"
+fetch "$GIFLIB_URL" "$X11_SRC/giflib-${GIFLIB_VER}.tar.gz" "giflib"
 if [ ! -d "$X11_SRC/giflib-${GIFLIB_VER}" ]; then
   tar -xf "$X11_SRC/giflib-${GIFLIB_VER}.tar.gz" -C "$X11_SRC" \
     || { fail "giflib did not unpack"; exit 1; }
@@ -2073,10 +2075,11 @@ ok "loaders present: $(cd "$IMLIB2_LOADER_DIR" && ls *.so | tr '\n' ' ')"
 header "feh ${FEH_REF} (image viewer, minimal)"
 # feh is plain make. The host's libpng satisfies its -lpng; libImlib2 comes from
 # x11-prefix via LD_LIBRARY_PATH, and CFLAGS/LDFLAGS point the headers at it.
-fetch "$FEH_URL" "$X11_SRC/feh.tar.gz"
+fetch "$FEH_URL" "$X11_SRC/feh.tar.gz" "feh"
 if [ ! -d "$X11_SRC/feh" ]; then
-  # derf/feh's tarball unpacks as feh-<branch>; strip it so the path is stable
-  # regardless of which branch the ref resolves to today.
+  # derf/feh's tarball unpacks as feh-<ref>, which is "feh-master" when built
+  # from a branch and "feh-3.13.1" from a tag. Strip it so the path stays stable
+  # across either.
   rm -rf "$X11_SRC/feh"
   mkdir -p "$X11_SRC/feh"
   tar -xf "$X11_SRC/feh.tar.gz" -C "$X11_SRC/feh" --strip-components=1 \
@@ -2126,7 +2129,7 @@ header "ttyrec ${TTYREC_VER} (terminal sessions; also goes into atom)"
 # This is Debian's packaging of OVH's fork, which unpacks as ovh-ttyrec-1.1.7.1/
 # - not ttyrec-1.1.7.1/ - so --strip-components=1 is used to get a stable path
 # rather than hardcoding a name that tracks whoever last repackaged it.
-fetch "$TTYREC_URL" "$X11_SRC/ttyrec-${TTYREC_VER}.tar.gz"
+fetch "$TTYREC_URL" "$X11_SRC/ttyrec-${TTYREC_VER}.tar.gz" "ttyrec"
 if [ ! -f "$X11_SRC/ttyrec/Makefile" ]; then
   rm -rf "$X11_SRC/ttyrec"
   mkdir -p "$X11_SRC/ttyrec"
@@ -2167,7 +2170,7 @@ header "ffmpeg ${FFMPEG_VER} (screen capture + ffplay)"
 # call rather than the safe-looking LGPL one. Built into x11-prefix like
 # everything else here, and stripped - a default build carries symbols nobody
 # in this image will ever resolve.
-fetch "$FFMPEG_URL" "$X11_SRC/ffmpeg-${FFMPEG_VER}.tar.xz"
+fetch "$FFMPEG_URL" "$X11_SRC/ffmpeg-${FFMPEG_VER}.tar.xz" "ffmpeg"
 if [ ! -d "$X11_SRC/ffmpeg-${FFMPEG_VER}" ]; then
   tar -xf "$X11_SRC/ffmpeg-${FFMPEG_VER}.tar.xz" -C "$X11_SRC" \
     || { fail "ffmpeg did not unpack"; exit 1; }
@@ -2258,7 +2261,7 @@ header "libXpm ${XPM_VER} (XFiles' only missing library)"
 # packaging repos, and the Debian pool does carry it but only as
 # libxpm_3.5.19.orig.tar.gz - note the lowercase 'x' in the filename, which is why
 # a probe for libXpm-3.5.19.tar.gz finds nothing.
-fetch "$XPM_URL" "$X11_SRC/libXpm-${XPM_VER}.tar.gz"
+fetch "$XPM_URL" "$X11_SRC/libXpm-${XPM_VER}.tar.gz" "libXpm"
 if [ ! -d "$X11_SRC/libXpm-${XPM_VER}" ]; then
   # The tarball's own top-level directory is already libXpm-<ver>, so no
   # --strip-components is wanted or needed here.
@@ -2286,16 +2289,12 @@ if [ -n "$XPM_SONAME" ] && [ ! -f "$X11_DIST/usr/lib64/$XPM_SONAME" ]; then
 fi
 ok "libXpm staged ($(du -h "$XPM_LIB" | cut -f1))"
 
-header "XFiles ${XFILES_REF} (file manager, plain Xlib)"
+header "XFiles $(pins_get xfiles.sha | cut -c1-12) (file manager, plain Xlib)"
 # POSIX make with brace expansion, no configure. Its Makefile hardcodes
 # PROG_LDFLAGS as "-lfontconfig -lXft -lX11 -lXext -lXcursor -lXrender -lXpm
 # -lpthread", so the prefix's libraries are found via -L in LDFLAGS and the
 # headers via CPPFLAGS rather than by editing the Makefile.
-if [ ! -d "$XFILES_SRC/.git" ]; then
-  info "cloning XFiles"
-  git clone --quiet "$XFILES_REPO" "$XFILES_SRC" || { fail "XFiles clone failed"; exit 1; }
-fi
-git -C "$XFILES_SRC" checkout --quiet "$XFILES_REF"
+pins_clone "$XFILES_REPO" "$XFILES_SRC" xfiles
 info "XFiles at $(git -C "$XFILES_SRC" rev-parse --short HEAD) ($(git -C "$XFILES_SRC" log -1 --format=%cd --date=short))"
 run_quiet make -C "$XFILES_SRC" -j"$JOBS" \
   CPPFLAGS="-I$X11_PREFIX/usr/include -I/usr/include/freetype2" \

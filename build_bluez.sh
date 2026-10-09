@@ -49,6 +49,9 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Sourced after the message helpers so pin failures report through die().
+# shellcheck source=pins.sh
+source "$ROOT/pins.sh"
 SRC="$ROOT/bluesz-src"
 PREFIX="$ROOT/bluesz-prefix"
 DIST="$ROOT/bluesz-dist"
@@ -76,6 +79,10 @@ if [ ! -s "$TARBALL" ]; then
 else
     info "cached bluez-${VER}.tar.gz"
 fi
+# Verified whether cached or freshly fetched: a truncated or edited tarball would
+# otherwise surface much later as an autogen.sh or configure failure that points
+# nowhere near the real cause.
+pins_verify "$TARBALL" bluez
 
 rm -rf "$DIST" "$PREFIX" "$STAGE" "$SRC/bluez-${VER}"
 mkdir -p "$DIST" "$PREFIX"

@@ -61,6 +61,10 @@ fail()  { printf "${C_RED}  [FAIL]${C_RESET} %s\n" "$*"; }
 warn()  { printf "${C_YELLOW}  [WARN]${C_RESET} %s\n" "$*"; }
 header(){ printf "\n${C_BOLD}${C_CYAN}:: %s${C_RESET}\n" "$*"; }
 
+# Sourced after the message helpers so pin failures report through fail().
+# shellcheck source=pins.sh
+source "$SCRIPT_DIR/pins.sh"
+
 usage() {
   printf "\n${C_BOLD}Usage:${C_RESET} ${C_CYAN}build_busybox.sh${C_RESET} [OPTIONS]\n"
   printf "  ${C_GREEN}-j, --jobs${C_RESET} ${C_CYAN}N${C_RESET}       Number of parallel jobs\n"
@@ -114,6 +118,10 @@ if [ ! -f "$BB_SRC/$BB_TAR" ]; then
 else
   info "have $BB_TAR"
 fi
+# Verified whether cached or freshly downloaded: a truncated busybox tarball
+# otherwise fails much later as a missing APPLYTS or a bad defconfig, which
+# points at the build rather than at the download.
+pins_verify "$BB_SRC/$BB_TAR" busybox
 
 if [ ! -d "$BB_SRC/busybox-${BB_VER}" ]; then
   info "extracting"

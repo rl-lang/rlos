@@ -67,6 +67,10 @@ fail()  { printf "${C_RED}  [FAIL]${C_RESET} %s\n" "$*"; }
 warn()  { printf "${C_YELLOW}  [WARN]${C_RESET} %s\n" "$*"; }
 header(){ printf "\n${C_BOLD}${C_CYAN}:: %s${C_RESET}\n" "*"; }
 
+# Sourced after the message helpers so pins_clone_hint can report through fail().
+# shellcheck source=pins.sh
+source "$SCRIPT_DIR/pins.sh"
+
 usage() {
   printf "\n"
   printf "${C_BOLD}Usage:${C_RESET} ${C_CYAN}build_binutils.sh${C_RESET} [OPTIONS]\n"
@@ -115,9 +119,10 @@ info "jobs:   ${C_BOLD}${JOBS:-auto}${C_RESET}"
 
 header "Checking binutils tree"
 if [[ ! -f "$BINUTILS_SRC/configure" ]]; then
-  fail "no binutils-gdb tree at '$BINUTILS_SRC' - symlink it first:"
-  fail "  git clone --depth 1 --branch binutils-2_46_1 git@github.com:gnutools/binutils-gdb.git ~/dev/c/binutils-2.46.1"
-  fail "  ln -s ~/dev/c/binutils-2.46.1 binutils"
+  # Hint generated from pins.lock, so the suggested clone always names the pinned
+  # commit rather than a branch tip that may have moved since this was written.
+  pins_clone_hint binutils "$BINUTILS_SRC"
+  fail "build_binutils.sh needs a binutils-gdb checkout. Symlink one at ./binutils and re-run."
   exit 1
 fi
 if [[ -d "$BINUTILS_SRC/.git" ]]; then

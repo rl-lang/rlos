@@ -40,6 +40,9 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Sourced after the message helpers so pin failures report through die().
+# shellcheck source=pins.sh
+source "$ROOT/pins.sh"
 SRC="$ROOT/fw-src/linux-firmware"
 DIST="$ROOT/fw-dist"
 FWURL="https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git"
@@ -74,17 +77,32 @@ command -v git >/dev/null || die "git not found"
 # Blobless shallow clone, then restrict the tree
 # ---------------------------------------------------------------------------
 header "sparse checkout"
-if [ ! -d "$SRC/.git" ]; then
-    info "cloning linux-firmware (blobless, depth 1)"
-    mkdir -p "$(dirname "$SRC")"
-    # --filter=blob:none means git resolves the tree without fetching file
-    # contents; only the paths actually checked out download their blobs.
-    # --depth 1 avoids the full history, which is most of the repository's size.
-    git clone --filter=blob:none --depth 1 --no-checkout "$FWURL" "$SRC" \
-        || die "clone failed (network?)"
+# Pinned to a commit rather than tracking main, so the same firmware lands in
+# the image every time. The checkout does not have to be fetched to be checked:
+# an existing tree is verified, and only a missing or wrong one is cloned.
+#
+# There is no --depth 1 here. A shallow clone only carries the branch tip, so it
+# cannot check out an arbitrary SHA; you need the pinned commit reachable first.
+# That makes a first-time clone slower than it was, and it is the deliberate
+# trade: a silently different firmware tree per build is worse.
+FW_SHA="$(pins_get linux-firmware.sha)"
+[ -n "$FW_SHA" ] || die "no linux-firmware.sha in $PINS_LOCK"
+
+if [ -d "$SRC/.git" ]; then
+    info "reusing existing clone; checking it against the pin"
+    if ! pins_clone "$FWURL" "$SRC" linux-firmware; then
+        die "existing $SRC is not at the pinned commit and could not be moved to it.
+  Remove it and re-run to fetch the pinned tree:
+    rm -rf $SRC"
+    fi
 else
-    info "reusing existing clone; refreshing refs"
-    git -C "$SRC" fetch --depth 1 origin || warn "fetch failed, using what is present"
+    info "cloning linux-firmware at pinned commit ${FW_SHA:0:12}"
+    mkdir -p "$(dirname "$SRC")"
+    # Not --depth 1 and not --filter=blob:none: the first cannot reach an
+    # arbitrary SHA, and kernel.org does not support the second (it answers
+    # "filtering not recognized by server" and sends the whole tree anyway).
+    pins_clone "$FWURL" "$SRC" linux-firmware \
+        || die "clone failed, or the pinned commit is no longer fetchable (network?)"
 fi
 
 cd "$SRC"
@@ -97,9 +115,15 @@ git sparse-checkout set --no-cone $(printf '/%s ' "${DIRS[@]}") $(printf '/%s ' 
     || die "sparse-checkout set failed"
 git read-tree -mu HEAD 2>/dev/null || git checkout -q \
     || die "could not materialise the sparse checkout"
-BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)"
-git checkout -q "$BRANCH" 2>/dev/null || true
-info "checked out: $(git rev-parse --short HEAD 2>/dev/null || echo unknown) on $BRANCH"
+# HEAD is detached by design: it is a pinned commit, not a branch tip. Printing
+# the branch name here would report "HEAD", which tells you nothing, so print
+# the SHA instead and check it still matches.
+FW_HEAD="$(git rev-parse HEAD 2>/dev/null)"
+if [ "$FW_HEAD" != "$FW_SHA" ]; then
+    die "firmware at $FW_HEAD, pins.lock says $FW_SHA"
+fi
+info "firmware at $FW_SHA (detached, pinned)"
+info "checked out: $(git rev-parse --short HEAD 2>/dev/null || echo unknown) of $FW_SHA"
 
 for d in "${DIRS[@]}"; do
     [ -d "$d" ] || warn "$d/ not present in this revision - skipping"
