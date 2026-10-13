@@ -344,7 +344,7 @@ PubkeyAuthentication yes
 UsePAM no
 
 # No client-side X to forward to.
-X11Forwarding no
+X11Forwarding yes
 
 # sftp subsystem. NOT optional, and the omission is invisible until someone
 # runs sftp or scp: OpenSSH has no built-in default for this, so with the line

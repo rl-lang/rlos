@@ -1,17 +1,6 @@
 #!/usr/bin/env bash
 # build_xorriso.sh - build GNU xorriso (host tool) into host-tools/
 #
-# Gentoo does not package xorriso (no app-cdr/xorriso ebuild, verified
-# against upstream master 2026-09), but grub-mkrescue needs it as a
-# backend for rlos-iso/mkiso.sh. So we vendor it like gcc and git:
-# pinned tarball, local prefix, no root, no host pollution.
-#
-# Output is a host tool tree in host-tools/:
-#   bin/xorriso               the ISO creator grub-mkrescue calls
-#   bin/osirrox, bin/xorrecord, ...  sibling tools from the same tree
-#   share/man, share/info, ...       docs (harmless)
-# mkiso.sh auto-prepends host-tools/bin to PATH when present.
-#
 # Pinned to the tested upstream tarball below for reproducibility.
 #
 # Usage:
@@ -25,7 +14,6 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# Pinned upstream release (ftp.gnu.org/gnu/xorriso/).
 XORRISO_VER="1.5.8"
 XORRISO_URL="https://ftp.gnu.org/gnu/xorriso/xorriso-${XORRISO_VER}.tar.gz"
 XORRISO_SRC="$SCRIPT_DIR/xorriso-src"
@@ -54,8 +42,6 @@ fail()  { printf "${C_RED}  [FAIL]${C_RESET} %s\n" "$*"; }
 warn()  { printf "${C_YELLOW}  [WARN]${C_RESET} %s\n" "$*"; }
 header(){ printf "\n${C_BOLD}${C_CYAN}:: %s${C_RESET}\n" "*"; }
 
-# Sourced after the message helpers so pin failures report through fail().
-# shellcheck source=pins.sh
 source "$SCRIPT_DIR/pins.sh"
 
 usage() {
@@ -128,9 +114,7 @@ if [[ ! -f "$TARBALL" ]]; then
 else
   ok "tarball already present, skipping download"
 fi
-# Verified whether cached or freshly downloaded. xorriso builds into the ISO
-# tooling, so a corrupted tarball would surface as a confusing mkisofs failure
-# much later.
+# Verified whether cached or freshly downloaded.
 pins_verify "$TARBALL" xorriso
 
 header "Building xorriso (prefix = host-tools, host untouched)"

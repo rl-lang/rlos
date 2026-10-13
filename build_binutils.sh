@@ -1,25 +1,10 @@
 #!/usr/bin/env bash
 # build_binutils.sh - build GNU binutils for the rlos guest (as + ld + binutils)
 #
-# This exists because build_gcc.sh cannot work without it. TinyCC carried its
-# own assembler and linker, which is why the guest has never needed binutils:
-# tcc has a built-in as and a built-in ld. GCC has neither - it shells out to
-# `as` to assemble, and to collect2 -> `ld` to link. A guest with gcc and no
-# binutils fails at the first link with
-#
-#   as: command not found            (during compilation)
-#   collect2: error: ld returned 1 exit status
-#
-# so binutils is not optional here, it is the floor under the compiler.
-#
 # Output is a guest-root tree in binutils-dist/:
 #   bin/{as,ld,ld.bfd,ar,nm,ranlib,objcopy,objdump,strip,readelf,size,strings}
 #   bin/addr2line, bin/elfedit
 #   lib64/ld-linux-x86-64.so.2       staged by assemble-rootfs.sh, referenced here
-#
-# Only the pieces rlt --compile and gcc's driver actually exec. gdb, gdbserver
-# and the sim directory are all disabled - nothing in the guest needs them and
-# they are most of the build time.
 #
 # Usage:
 #   ./build_binutils.sh                    # build (default)
@@ -35,9 +20,6 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# Local checkout via symlink: rlos/binutils -> your binutils-gdb tree.
-# The binutils-gdb monorepo carries gdb alongside binutils; we only build the
-# binutils half, so the pin is recorded against this tree.
 BINUTILS_PIN="5e56594815854de5eca35c7c04b11705d0f19c02" # binutils-2_46_1
 BINUTILS_VER="2.46.1"
 BINUTILS_SRC="$SCRIPT_DIR/binutils"
@@ -67,8 +49,6 @@ fail()  { printf "${C_RED}  [FAIL]${C_RESET} %s\n" "$*"; }
 warn()  { printf "${C_YELLOW}  [WARN]${C_RESET} %s\n" "$*"; }
 header(){ printf "\n${C_BOLD}${C_CYAN}:: %s${C_RESET}\n" "*"; }
 
-# Sourced after the message helpers so pins_clone_hint can report through fail().
-# shellcheck source=pins.sh
 source "$SCRIPT_DIR/pins.sh"
 
 usage() {
@@ -119,8 +99,6 @@ info "jobs:   ${C_BOLD}${JOBS:-auto}${C_RESET}"
 
 header "Checking binutils tree"
 if [[ ! -f "$BINUTILS_SRC/configure" ]]; then
-  # Hint generated from pins.lock, so the suggested clone always names the pinned
-  # commit rather than a branch tip that may have moved since this was written.
   pins_clone_hint binutils "$BINUTILS_SRC"
   fail "build_binutils.sh needs a binutils-gdb checkout. Symlink one at ./binutils and re-run."
   exit 1
@@ -136,14 +114,6 @@ else
   warn "not a git tree - building as-is"
 fi
 
-# The triplet matters and must NOT be guessed. This host is Gentoo, where
-# config.guess reports x86_64-pc-linux-gnu rather than the more widely seen
-# x86_64-linux-gnu. A triplet hardcoded into a staging path would be wrong on
-# any other distro, so let the build decide and read the layout back afterwards.
-#
-# We pass no --target at all: this is a native build, so binutils defaults to
-# the host triplet and everything it installs is self-consistent with the
-# compiler build that will follow (build_gcc.sh takes the same approach).
 header "Configuring binutils"
 ( cd "$BINUTILS_SRC" && ./config.guess ) > "$PKG.triplet" 2>/dev/null || true
 TRIPLET="$(cat "$PKG.triplet" 2>/dev/null || true)"
@@ -158,29 +128,10 @@ info "triplet: ${C_BOLD}${TRIPLET}${C_RESET} (native, not hardcoded)"
 # untouched. Without it, ld would bake this host's libdir layout into its
 # default SEARCH_DIR list and in-guest links would look in the wrong places.
 #
-# --disable-gdb et al: gdb pulls in libdecnumber, readline and
+# --disable-gdb: gdb pulls in libdecnumber, readline and
 # libsource-highlight, none of which the guest has, and none of which anything
 # here links. Dropping them removes most of the build time and the entire
 # chance of an unresolved dependency at stage time.
-#
-# all-binutils/all-gas/all-ld rather than a bare `make`: that is exactly the
-# set being staged, and it skips the gdb-side testsuites entirely.
-# --without-zstd and --disable-debuginfod are not size choices, they are
-# correctness ones. Both are auto-detected on, and on this host they drag real
-# shared-library dependencies into the tools:
-#
-#   libzstd.so.1   linked by 13 of the 14 tools, as and ld included
-#   libcurl + libssl + libcrypto + libnghttp2 + libpsl + libcares +
-#   libjson-c + libelf + libdebuginfod   linked into objdump and readelf
-#
-# Staging a tree whose `as` needs libzstd.so.1 that the guest does not have
-# means every single in-guest compile fails at exec time with
-#
-#   as: error while loading shared libraries: libzstd.so.1
-#
-# which reads as a broken rootfs rather than a toolchain problem. Rather than
-# chase that closure through assemble-rootfs.sh, cut both at the source: after
-# this, every staged tool links against libc.so.6 and nothing else.
 info "./configure --prefix=/usr --without-zstd --disable-debuginfod ..."
 ( cd "$BINUTILS_SRC" && make distclean > /dev/null 2>&1 || true
   ./configure --prefix=/usr \
@@ -210,30 +161,6 @@ rm -rf "$BINUTILS_DIST"
 mkdir -p "$BINUTILS_DIST/bin"
 
 # The tools gcc's driver and rlt's link line actually exec.
-#
-# as and ld are the two that matter. ar, nm and ranlib are not optional either:
-# gcc's LTO wrapper shells out to all three to build and index the temporary
-# archives that -flto passes between compile and link, so omitting them breaks
-# `rlt --compile --lto` and nothing else. strip/objcopy back rlt's -s, and
-# addr2line/elfedit/size/strings are conveniences that cost nothing.
-#
-# objdump and readelf are deliberately EXCLUDED. gcc's driver never execs them
-# to compile or link, and on this host they are the two tools that drag in the
-# debuginfod stack - libcurl, libssl, libcrypto, libnghttp2, libpsl, libcares,
-# libjson-c, libelf, libdebuginfod and more, i.e. 15 libraries the guest does
-# not have. --disable-debuginfod does not prevent it: binutils still defines
-# HAVE_LIBDEBUGINFOD (binutils/config.h) and links them anyway.
-#
-# Shipping them would mean staging that whole closure into the image to support
-# two inspection tools nothing here calls. If a debugging toolchain is ever
-# wanted in-guest that is a separate, deliberate change - not a side effect of
-# needing as and ld.
-#
-# Binutils installs everything to <prefix>/bin, so this is a flat copy rather
-# than a subtree move. The per-triplet libraries under <prefix>/lib/<triplet>/
-# are deliberately NOT staged: ld and as link libbfd and libiberty statically.
-# The dependency check at the bottom of this script proves that rather than
-# assuming it - a staged as that cannot start fails every in-guest compile.
 STAGED_TOOLS="as ld ld.bfd ar nm ranlib objcopy strip size strings addr2line elfedit"
 MISSING_TOOLS=""
 for tool in $STAGED_TOOLS; do
@@ -254,15 +181,7 @@ fi
 strip --strip-unneeded "$BINUTILS_DIST"/bin/* 2>/dev/null || true
 ok "$(ls "$BINUTILS_DIST/bin" | wc -l) tools: $(echo $STAGED_TOOLS)"
 
-# ---- verification: would these binaries actually start in the guest? --------
-#
-# build_tcc.sh documents the identical trap for tcc's --elfinterp. The guest
-# pins its interpreter to /lib64/ld-linux-x86-64.so.2 (assemble-rootfs.sh
-# defines LD_LINUX with that exact string), so a staged tool built against a
-# different loader path exec-fails in-guest with a bare "not found" that reads
-# as a broken rootfs rather than a compiler problem.
-#
-# This checks PT_INTERP on the staged copies, not on the pkg/ originals.
+# ---- verification ----
 header "Checking ELF interpreter"
 EXPECT_INTERP="/lib64/ld-linux-x86-64.so.2"
 BAD_INTERP=""
@@ -282,12 +201,7 @@ if [ -n "$BAD_INTERP" ]; then
 fi
 ok "all tools: PT_INTERP = $EXPECT_INTERP"
 
-# ---- verification: do as and ld actually assemble and link? -----------------
-#
-# Staging files that "look right" is not evidence, and the history of this
-# repo has two checks that passed on broken input. So prove the pair works:
-# assemble a hand-written .s, link it, and RUN the result. If as is missing an
-# .so, or ld is missing an emulation library, this is where it surfaces.
+# ---- verification ----
 header "Verifying as + ld actually work"
 VERIFY="$(mktemp -d)"
 trap 'rm -rf "$VERIFY"' EXIT
@@ -314,11 +228,6 @@ if ! "$BINUTILS_DIST/bin/ld" -m elf_x86_64 -o "$VERIFY/t" "$VERIFY/t.o" 2>"$VERI
     sed 's/^/         /' "$VERIFY/ld-err" | head -10
     exit 1
 fi
-# Count the emulations properly: `ld -V` prints "  Supported emulations:" then
-# one indented name per line. The obvious greps all fail here - matching the
-# header with a lowercase 's' counts 0, and matching the header alone counts 1
-# regardless of how many emulations exist. elf_x86_64 must be present anyway,
-# since that is what gcc links x86-64 objects with, so assert on that directly.
 N_EMUL="$("$BINUTILS_DIST/bin/ld" -V 2>/dev/null | sed -n '/Supported emulations/,$p' | grep -c 'elf_')"
 if ! "$BINUTILS_DIST/bin/ld" -V 2>/dev/null | grep -q 'elf_x86_64'; then
     fail "staged ld does not support elf_x86_64 - nothing could be linked in-guest"
@@ -326,8 +235,6 @@ if ! "$BINUTILS_DIST/bin/ld" -V 2>/dev/null | grep -q 'elf_x86_64'; then
 fi
 ok "ld linked it (elf_x86_64 present, $N_EMUL emulations)"
 
-# And it must RUN. A freestanding _start that exits 0 via syscall needs no libc,
-# so a successful run proves the loader path and the tool pair, nothing else.
 if "$VERIFY/t"; then
     ok "as + ld linked AND ran a freestanding binary"
 else
@@ -335,16 +242,6 @@ else
     exit 1
 fi
 
-# Record ld's baked default search dirs. These are what `-lm` and friends
-# resolve against, and the guest keeps its libraries in /usr/lib64 - so if
-# /usr/lib64 is absent from this list, build_gcc.sh has to add -L for it and
-# that fact needs to be written down rather than discovered later.
-#
-# The grep matches the literal SEARCH_DIR("/usr/lib64"). Older binutils emitted
-# these with a leading '=' (SEARCH_DIR("=/usr/lib64"), the sysroot-relative
-# form), and matching that spelling is what made an earlier version of this
-# check report a false negative against a perfectly correct ld. Match the path
-# on its own so both spellings are covered.
 header "ld default search dirs (guest /usr/lib64 must be reachable)"
 "$BINUTILS_DIST/bin/ld" --verbose 2>/dev/null \
     | grep SEARCH_DIR | tr ' ' '\n' | grep -v '^$' | sed 's/^/         /'
@@ -358,19 +255,7 @@ else
     exit 1
 fi
 
-# ---- verification: no staged tool needs a library the guest lacks ----------
-#
-# This is the check that was missing when the first build produced a tree where
-# `as` would not start. ldd on the host is the wrong tool for the question -
-# it answers "does this run HERE", and the host has libzstd and the whole
-# debuginfod stack that the guest may not. What matters is: does every
-# dependency resolve to something assemble-rootfs.sh actually stages?
-#
-# The guest is glibc, and libc.so.6 is staged for every other binary in the
-# image, so libc is the one dependency that is safe to assume. Anything else
-# is a latent in-guest exec failure, so treat it as a build error rather than a
-# warning: the fix is always --without-* at configure time, never a bigger
-# closure to stage.
+# ---- verification ----
 header "Shared-library deps (must be libc.so.6 only)"
 DEPS_OK=1
 for tool in $STAGED_TOOLS; do

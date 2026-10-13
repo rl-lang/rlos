@@ -1,32 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Absolute, resolved before any cd. The verification at the end reads vmlinux
-# after this script has returned to the starting directory, and a relative
-# KERNEL_DIR silently fails to resolve there.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 KERNEL_DIR="$SCRIPT_DIR/linux"
 KERNEL_REPO="https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git"
 CONFIG_SRC="$SCRIPT_DIR/kernel.config"
 OUT_BZIMAGE="$SCRIPT_DIR/kernel-images/rlos/bzImage"
 
-# Clean build by default. This is not a performance decision, it is a
-# correctness one.
-#
-# make's dependency tracking does not reliably rebuild objects when only a
-# Kconfig symbol changed. The symptom is nasty because every step reports
-# success: `make` prints "bzImage is ready", bzImage gets a fresh timestamp,
-# and the config still says =y - but the object files were compiled against the
-# previous config and are simply relinked. That happened here with
-# CONFIG_USB_XHCI_PCI: the build "succeeded", and the resulting kernel still
-# could not see USB, panicking with "VFS: unable to mount root fs on
-# unknown-block(0,0)". Every drivers/usb/host/*.o predated the config edit.
-#
-# A config check cannot catch that, because .config genuinely does contain the
-# symbol. Only rebuilding from scratch, or inspecting the linked binary, can.
-#
+# Clean build by default.
 # Set RLOS_NO_CLEAN=1 for an incremental build when iterating on C code with no
-# config change - that is the only case where incremental is actually correct.
+# config change.
 if [[ "${RLOS_NO_CLEAN:-0}" == "1" ]]; then
     echo "RLOS_NO_CLEAN=1: incremental build (only safe when kernel.config is unchanged)"
 else
@@ -76,10 +59,6 @@ REQUIRED_SYMS=(
     DRM
     DRM_EFIDRM
     DRM_FBDEV_EMULATION
-    # i915 is verified here for the same reason as the framebuffer symbols
-    # above: olddefconfig drops unsatisfiable options silently, and a kernel
-    # built without i915 boots fine - it just falls back to the EFI
-    # framebuffer, which is the unaccelerated path we added it to escape.
     DRM_I915
     FB
     FB_CORE
@@ -87,11 +66,6 @@ REQUIRED_SYMS=(
     FONT_8x16
     FONTS
     FONT_SUN12x22
-    # USB host controllers, and critically their PCI transports. An HCD without
-    # its PCI glue compiles and links cleanly, then never binds to hardware - so
-    # the stick is invisible and the kernel panics with "VFS: unable to mount
-    # root fs on unknown-block(0,0)". This is checked here because the ISO
-    # hides it (it has an initramfs) while an installed stick does not.
     USB
     USB_XHCI_HCD
     USB_XHCI_PCI
@@ -102,66 +76,31 @@ REQUIRED_SYMS=(
     USB_UHCI_HCD
     USB_STORAGE
     USB_HID
-    # GPT, needed to resolve root=PARTUUID= on a partitioned target.
     EFI_PARTITION
-    # Sound. rl-std/audio.rs reaches hardware through rodio -> cpal -> ALSA,
-    # which needs /dev/snd/* from a bound driver. Checked for the same reason
-    # as the symbols above: a silently dropped SND_HDA_INTEL still builds a
-    # "working" kernel that has no sound at all.
     SOUND
     SND
     SND_PCM
     SND_HDA
     SND_HDA_INTEL
-    # Codec umbrellas. With no codec bound the controller finds no analog pins
-    # and every PCM open returns -112 "Host is down", which reads as "no sound
-    # card" even though the card shows up in /proc/asound/cards.
     SND_HDA_CODEC_REALTEK
     SND_HDA_CODEC_HDMI
-    # User namespaces. bubblewrap (rlos-atom) needs them for unprivileged
-    # containers; without it bwrap only works as root skipping CLONE_NEWUSER,
-    # so an escaped container is a root escape. Checked here so a silently
-    # dropped USER_NS is a build failure rather than a runtime surprise.
     USER_NS
-    # Wireless. Checked for the same reason as the symbols above, and it is the
-    # one area where a silent drop is most likely. CFG80211 and MAC80211 live in
-    # net/wireless/Kconfig and are reachable on their own, but every VENDOR menu -
-    # WLAN_VENDOR_ATH and the ath drivers under it - sits behind `if WLAN` in
-    # drivers/net/wireless/Kconfig. Enable cfg80211 without WLAN and the result is
-    # a kernel with a full wireless stack that can never bind a single adapter:
-    # wlan0 simply never appears, and no error is printed, because nothing
-    # requested a driver that was never offered.
     WLAN
     WLAN_VENDOR_ATH
     CFG80211
     MAC80211
     RFKILL
-    # ath9k is this machine's adapter (QCA6174). The rest cover the USB/SDIO
-    # Atheros parts so the same ISO works on other machines.
     ATH5K
     ATH5K_PCI
     ATH9K
     ATH9K_PCI
     ATH9K_HTC
     ATH6KL
-    # ath10k alongside ath9k: "QCA6174" is sold under one name across two
-    # silicon families that need entirely different firmware. Verified here for
-    # the same silent-drop reason - a kernel with ath9k but no ath10k binds
-    # nothing on a 168c:0042 card and reports no error.
     ATH10K
     ATH10K_PCI
-    # Bluetooth. BT alone compiles with no transport at all, which produces a
-    # stack that enumerates nothing: bluetoothd starts, `bluetoothctl list` is
-    # empty, and there is no controller to power on. BT_HCIBTUSB is the transport
-    # that makes a USB dongle enumerate.
     BT
     BT_RFCOMM
     BT_HCIBTUSB
-    # Crypto over AF_ALG, which iwd requires. Checked because iwd's failure here
-    # is unusually well disguised: it exits 1 before touching any interface, so
-    # the only symptom is "no wifi", which points at the wireless driver and not
-    # at the crypto subsystem. Without these in REQUIRED_SYMS, dropping one is
-    # silent - the kernel builds, the ISO builds, and wireless is simply absent.
     CRYPTO_USER_API
     CRYPTO_USER_API_HASH
     CRYPTO_USER_API_SKCIPHER
@@ -209,19 +148,7 @@ if [[ ! -f "$BUILT_IMAGE" ]]; then
     exit 1
 fi
 
-# Verify the LINKED kernel actually contains the driver, not just that .config
-# asks for it. This is not paranoia: make can decide nothing needs recompiling
-# when only a Kconfig symbol changed, so `bzImage` gets re-linked from object
-# files compiled against the old config and the symbol is present in .config but
-# absent from the binary. That happened here - CONFIG_USB_XHCI_PCI=y was set,
-# the build reported success, `bzImage` was freshly timestamped, and the kernel
-# still could not see USB because every drivers/usb/host/*.o predated the change.
-# A config check cannot catch this; only looking at the linked image can.
-#
-# vmlinux is the authoritative artifact: bzImage is a compressed copy of it.
-# Mandatory, not conditional: a check that quietly skips itself is indistinguishable
-# from one that passed, which is exactly the failure mode this whole section exists
-# to catch.
+# Verify the LINKED kernel actually contains the driver.
 if [[ ! -f "$KERNEL_DIR/vmlinux" ]]; then
     echo "error: $KERNEL_DIR/vmlinux not found after a successful build." >&2
     echo "  Without it the USB drivers cannot be verified, and a kernel that" >&2
@@ -235,16 +162,6 @@ if ! command -v nm > /dev/null 2>&1; then
     exit 1
 fi
 
-# One nm pass, captured into a variable, then matched against that.
-#
-# Do NOT write this as `nm ... | grep -q PATTERN`. nm emits tens of megabytes of
-# symbols and grep -q exits at the FIRST match, which closes the pipe while nm is
-# still writing. nm then dies of SIGPIPE, and because this script runs under
-# `set -o pipefail`, the pipeline reports failure even though the pattern WAS
-# found - so the check reports drivers missing while they are present in the
-# binary. That is not hypothetical: it rejected a clean 10-minute build here,
-# which is how it was found. Capturing first removes the early-exit pipe entirely,
-# and also runs nm once instead of three times.
 SYMS="$(nm "$KERNEL_DIR/vmlinux" 2>/dev/null || true)"
 if [[ -z "$SYMS" ]]; then
     echo "error: nm produced no output for $KERNEL_DIR/vmlinux." >&2
@@ -273,9 +190,6 @@ if [ ${#missing_drivers[@]} -ne 0 ]; then
 fi
 echo "USB PCI transports verified in vmlinux (xhci/ehci/ohci)"
 
-# The output directory is created here rather than assumed. A `cp` into a
-# missing directory fails with a bare "No such file or directory" after a
-# successful multi-minute build, which is the worst possible time to discover it.
 mkdir -p "$(dirname "$OUT_BZIMAGE")"
 cp "$BUILT_IMAGE" "$OUT_BZIMAGE"
 echo "done: $OUT_BZIMAGE"

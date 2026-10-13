@@ -44,16 +44,8 @@ header() {
   echo "== $* =="
 }
 
-# One shared tree for both kernels. The OUTPUT is separate; the source is not.
-# See the note in rlos-atom/compile_atom_kernel.sh for why.
 SHARED_TREE="$ROOT/linux"
 
-# Build lock. `make clean` in a tree that is being compiled in produces a
-# half-built kernel that still reports success, and reconfiguring .config under a
-# running make produces a kernel built against the wrong options. The bug that
-# motivated this was not sharing a tree - it was starting two builds at once.
-# Builds here are sequential; the lock stops a second one being started by
-# accident (or by a forgotten background job).
 LOCKFILE="$ROOT/.kernel-build.lock"
 
 # target -> tree, config, output image
@@ -65,10 +57,6 @@ builder_for(){ case "$1" in rlos) echo "$ROOT/compile_kernel.sh" ;;      rlos-at
 TARGETS=("$TARGET")
 [ "$TARGET" = "all" ] && TARGETS=(rlos rlos-atom)
 
-# Take the build lock for the duration, and fail fast if someone else has it.
-# flock is used rather than a bare pgrep because pgrep cannot reliably tell a
-# live build from a stale one, and matching on the tree path in a command line
-# has already produced false positives here.
 exec 9>"$LOCKFILE"
 if ! flock -n 9; then
     echo "error: another kernel build or clean holds $LOCKFILE" >&2
@@ -88,9 +76,6 @@ for t in "${TARGETS[@]}"; do
   if [ ! -d "$d" ]; then
       warn "no tree at $d - nothing to clean (it gets cloned on the next build)"
   elif [ "$PURGE" = "1" ]; then
-      # --purge deletes the source tree, not just the build products. Only valid
-      # for the FIRST target: the tree is shared, so `clean_kernel.sh all --purge`
-      # would otherwise try to delete it twice.
       rm -rf "$d"
       ok "removed $d (will re-clone on next build - needs network)"
       if [ "$TARGET" = "all" ]; then
@@ -98,9 +83,6 @@ for t in "${TARGETS[@]}"; do
           break
       fi
   else
-      # make clean, not rm -rf: it removes the build products but leaves the
-      # .config and the source, so the next build is a rebuild rather than a
-      # full recompile of every file. Use --purge when even that is suspect.
       if make -C "$d" clean > /dev/null 2>&1; then
           ok "make clean in $d"
       else
@@ -108,9 +90,6 @@ for t in "${TARGETS[@]}"; do
           rm -rf "$d"
           ok "removed $d"
       fi
-      # .config is removed too. Leaving it is how a stale config survives a
-      # "clean" and quietly builds the wrong kernel - the next build is supposed
-      # to copy a fresh one in from kernel.config.
       if [ -f "$d/.config" ] && rm -f "$d/.config"; then
           info "removed $d/.config (a stale one is worse than none)"
       fi

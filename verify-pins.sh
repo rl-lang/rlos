@@ -120,7 +120,7 @@ git_dir_of() {
         xcb-util-xrm)       echo "x11-src/xcb-util-xrm" ;;
         libstartup-notification) echo "x11-src/libstartup-notification" ;;
         imlib2)             echo "x11-src/imlib2" ;;
-        linux)              return 1 ;;   # unpinned by design
+        linux)              return 1 ;;   # unpinned
         *)                  return 1 ;;
     esac
 }

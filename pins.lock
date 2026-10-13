@@ -9,13 +9,6 @@
 #   of the entries below (xfiles, linux) pin commits that are AHEAD of their
 #   nearest release tag, because that is the tree this image was built from.
 #
-# WHAT A PIN DOES AND DOES NOT BUY YOU
-#   sha256 pins are permanent: the bytes either hash to that or the build stops.
-#   git pins are only as durable as the remote keeping the object reachable.
-#   A commit that is no longer on any branch and is not tagged can, in
-#   principle, be garbage-collected upstream and become unfetchable. The
-#   sha256s cannot rot this way. If a pin here ever 404s, that is what happened.
-#
 # HOW TO BUMP
 #   git:  clone/fetch the upstream, check out the commit you want, take
 #         `git rev-parse HEAD`, and update the sha below. Record why in a note.
@@ -29,29 +22,11 @@
 # name         repo  ref  sha  note
 
 [git]
-# The kernel is deliberately NOT pinned. compile_kernel.sh keeps --depth 1
-# against master, because the kernel is maintained here by hand: it is patched
-# locally and rebased forward, so a pin would be wrong the moment a patch lands
-# and would only create the illusion of a fixed kernel. Whoever builds it is
-# responsible for the tree at ./linux.
-#
-# The two consequences, stated plainly:
-#   - a build on a different day can use a different kernel, and nothing here
-#     will stop that;
-#   - for a reproducible build, record the kernel SHA alongside the image, e.g.
-#     `git -C linux rev-parse HEAD` into your release notes.
-#
-# Note kernel.org does not support partial clone ("filtering not recognized by
-# server"), so pinning by SHA would mean a full multi-GB fetch here, not a cheap
-# blobless one.
+# The kernel is deliberately NOT pinned.
 linux.repo=https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git
 linux.sha=
 linux.note=UNPINNED BY DESIGN - kernel is patched and rebased locally; see above
 
-# linux-firmware. NOTE the checkout lives at fw-src/linux-firmware, not fw-src -
-# fw-src is a plain directory and `git -C fw-src rev-parse` silently walks up to
-# the rlos repo, which will hand you an rlos commit instead of a firmware one.
-# Ask for the SHA from fw-src/linux-firmware explicitly.
 linux-firmware.repo=https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git
 linux-firmware.sha=d947e4e8e314e9254a1242dc1a5d9cede2cce33d
 linux-firmware.note=blobless clone + sparse-checkout of a few driver dirs; 2026-10-02
@@ -62,37 +37,34 @@ rl-lang.repo=https://github.com/rl-lang/rl-lang.git
 rl-lang.sha=bd825f78c1dc900e47afc74ca7b49f5fe788ae03
 rl-lang.note=branch dev at pin time; "add parity to terminal library for c transpiler"
 
-# Symlinked build inputs for the toolchain. Not fetched by any script - you
-# clone these yourself and symlink them in. The pins are here so that
-# bootstrap can tell you exactly which commit to check out.
 gcc.repo=https://github.com/gcc-mirror/gcc.git
 gcc.sha=78d4ac73dd391005b895a6148cd9831e28e1208b
 gcc.note=releases/gcc-16.2.0; symlink as ./gcc
+
 binutils.repo=https://github.com/gnutools/binutils-gdb.git
 binutils.sha=5e56594815854de5eca35c7c04b11705d0f19c02
 binutils.note=binutils-2_46_1; symlink as ./binutils
+
 git.repo=https://github.com/git/git.git
 git.sha=e9019fcafe0040228b8631c30f97ae1adb61bcdc
 git.note=v2.55.0 exactly; symlink as ./git-src
 
-# Desktop. i3, yajl and libXft were already pinned in build_x11.sh by tag and
-# keep their own *_REF variables - they move to this file in one step.
-
-# 100 commits AHEAD of v1.1.1. Pinning to the tag would lose the scrollmode,
-# pgup/pgdown and focus fixes this image was built against.
 xfiles.repo=https://github.com/phillbush/xfiles.git
 xfiles.sha=c47a0d984caee93311cb081bd51a5a4a027c9f68
 xfiles.note=v1.1.1-100-gc47a0d9; deliberately past the last tag
+
 xauth.repo=https://gitlab.freedesktop.org/xorg/app/xauth.git
 xauth.sha=06c39dd0f7e19950e835a062edee8a2272e3270c
 xauth.note=replaces Xorg -ac; no release tag at pin time
+
 xcb-util-xrm.repo=https://github.com/Airblader/xcb-util-xrm.git
 xcb-util-xrm.sha=a17de570ab18bfd8b7b9bf23af9e0bb2249d02c9
 xcb-util-xrm.note=was --depth 1 on the default branch
+
 libstartup-notification.repo=https://github.com/bbidulock/startup-notification.git
 libstartup-notification.sha=b610115135fdb54fc16e775334438b1e9e8fbfdd
 libstartup-notification.note=has submodules; --recursive on clone AND fetch
-# Already correctly pinned inline; recorded here so verify-pins.sh covers it.
+
 imlib2.repo=https://github.com/gijsbers/imlib2.git
 imlib2.sha=fc333014c37b7ad9534e5e50c4df12964a1b84f7
 imlib2.note=1.12.7, 2026-09-03
@@ -110,55 +82,63 @@ imlib2.note=1.12.7, 2026-09-03
 # Desktop stack.
 xorg-server.url=https://www.x.org/releases/individual/xserver/xorg-server-21.1.24.tar.xz
 xorg-server.sha256=1a4eb36ca65cc3b1b936566d677a9786e13c11cd5806e951ac55f3f5ce3984af
+
 xf86-video-fbdev.url=https://www.x.org/releases/individual/driver/xf86-video-fbdev-0.5.1.tar.xz
 xf86-video-fbdev.sha256=9c2bc0fb9af092804138e8d5cb5627cabf2919ef60f0d1544a95c4ac2047f387
+
 xf86-input-libinput.url=https://www.x.org/releases/individual/driver/xf86-input-libinput-1.5.0.tar.xz
 xf86-input-libinput.sha256=2524c35f196554ea11aef3bba1cf324759454e1d49f98ac026ace2f6003580e6
+
 xkeyboard-config.url=https://www.x.org/releases/individual/data/xkeyboard-config/xkeyboard-config-2.48.tar.xz
 xkeyboard-config.sha256=b77041324f0109f77161ee43743fe04baa485866af8460d31e476ad3f7648fd5
+
 libinput.url=https://gitlab.freedesktop.org/libinput/libinput/-/archive/1.31.3/libinput-1.31.3.tar.gz
 libinput.sha256=b6749bf6f1890f6631c0a70a027c35fec9d2e096a39f720548896e41474a9854
+
 eudev.url=https://codeload.github.com/eudev-project/eudev/tar.gz/refs/tags/v3.2.15
 eudev.sha256=d5e430930f36a0e8d2ef475b775e46bd37ee3a8fc23e35c5125ead1f711bfc07
+
 mlterm.url=https://codeload.github.com/arakiken/mlterm/tar.gz/refs/tags/rel-3_9_1
 mlterm.sha256=e3aa833668e42f2b3640caf077a8b2ce8def0ebf3fce0ef01677430075d88cfb
+
 giflib.url=http://deb.debian.org/debian/pool/main/g/giflib/giflib_5.2.2.orig.tar.gz
 giflib.sha256=be7ffbd057cadebe2aa144542fd90c6838c6a083b5e8a9048b8ee3b66b29d5fb
+
 libXpm.url=http://deb.debian.org/debian/pool/main/libx/libxpm/libxpm_3.5.19.orig.tar.gz
 libXpm.sha256=f241f705c607fba1a53338f7e1c12005d6da326b5cb55a11a10847781b4578c0
-libinput-drv-note=xf86-input-libinput is a separate .x.org tarball from libinput above
-# DELIBERATE CHANGE. This image was previously built from feh master (tarball
-# sha256 c35d421b3635d16e83fb4d66c554a1f40814ee050bf28a961ac780f1157f670b,
-# fetched 2026-10-03), which was AHEAD of the 3.13.1 tag. The pin is now the
-# release tag, so this is not the same feh that was built before. Recompute the
-# sha below if you ever go back to a master snapshot.
+
 feh.url=https://codeload.github.com/derf/feh/tar.gz/refs/tags/3.13.1
 feh.sha256=1c0688acd87e7b024eca5c5798870d4cf20192f43d9750b7e6aeadc893243b25
+
 ttyrec.url=http://deb.debian.org/debian/pool/main/t/ttyrec/ttyrec_1.1.7.1.orig.tar.gz
 ttyrec.sha256=ffd700f7c6f9f01d7dd62d88aceaa21aa97fc4a1eaf67304d2479d69051f2335
+
 Bibata-Modern-Ice.url=https://github.com/ful1e5/Bibata_Cursor/releases/download/v2.0.7/Bibata-Modern-Ice.tar.xz
 Bibata-Modern-Ice.sha256=a68cae60c4dc706350e194ebc91c5fe48bc7bc9d59e119555834a2a7ee5078ef
+
 sudo.url=https://www.sudo.ws/files/sudo-1.9.17p2.tar.gz
 sudo.sha256=4a38a1ab3adb1199257edc2a7c4a2bd714665eb605b04368843b06dada2cfcfb
+
 ffmpeg.url=https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz
 ffmpeg.sha256=8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e
 
-# Initramfs and base userspace.
 busybox.url=https://busybox.net/downloads/busybox-1.37.0.tar.bz2
 busybox.sha256=3311dff32e746499f4df0d5df04d7eb396382d7e108bb9250e7b519b837043a4
 
-# Optional desktop extras.
 bluez.url=https://github.com/bluez/bluez/archive/refs/tags/5.87.tar.gz
 bluez.sha256=f53d2eff3e94829aeec23651deac6e3034f4314338f3321866b36007748d0a3f
+
 iwd.url=https://deb.debian.org/debian/pool/main/i/iwd/iwd_3.12.orig.tar.xz
 iwd.sha256=d89a5e45c7180170e19be828f9e944a768c593758094fc57a358d0e7c4cb1a49
+
 libnl.url=https://deb.debian.org/debian/pool/main/libn/libnl3/libnl3_3.12.0.orig.tar.gz
 libnl.sha256=fc51ca7196f1a3f5fdf6ffd3864b50f4f9c02333be28be4eeca057e103c0dd18
+
 w3m.url=https://github.com/tats/w3m/archive/refs/tags/v0.5.3+git20230121.tar.gz
 w3m.sha256=fdc7d55d3c0104db26aa9759db34f37e5eee03f44c868796e3bbfb8935c96e39
+
 bdwgc.url=https://github.com/ivmai/bdwgc/archive/refs/tags/v8.2.12.tar.gz
 bdwgc.sha256=d09001f45dabf1c29a5df3e63020a4bab5ad4aad69137bb07100c717e2ecba0b
 
-# Host tooling used to build the ISO.
 xorriso.url=https://ftp.gnu.org/gnu/xorriso/xorriso-1.5.8.tar.gz
 xorriso.sha256=319e3675cd7d986bf71d36596ca7b03dac172a758462bedcbbd298a7f86f36cc

@@ -1,18 +1,24 @@
-# Kernel output moved to kernel-images/<image>/bzImage, and the atom tree is
-# separate from rlos's. Both are build products, not sources.
+# Kernel images
 kernel-images/
 bzImage
+# Linux repo (symlink or directory)
 linux/
 linux
-
+# RL-lang repo (symlink or directory)
 rl-lang/
 rl-lang
+# ISO
 iso/
 *.iso
 isostage/
+# initramfs
 initramfs/
 initramfs.gz
+# Klogd binary
+rlos-initramfs/klogd
+# RL
 rl-bins/
+# C toolchain
 gcc
 gcc-dist/
 gcc-pkg/
@@ -23,38 +29,38 @@ binutils-pkg/
 .gcc-build.log
 .binutils-conf.log
 .binutils-build.log
+# GIT Version Control
 git-src
 git-dist/
 git-pkg/
+# BusyBox
 busybox-src/
 busybox-dist/
 busybox-dist.applets.conf
+# Qemu Disk
 rootfs.ext4
 x11root/
 wlroot/
 *.img
-
-# rlos-iso: vendored xorriso + OVMF vars copy from UEFI test runs
+# ISO tools
 host-tools/
 xorriso-src/
 ovmf_vars.fd
-
-# rlos-initramfs: static C binaries (rebuilt by compile_*.sh)
-rlos-initramfs/klogd
+# Xorg
 x11-src/
 x11-prefix/
 x11-dist/
-
+# TUI Web Browser
 w3m-src/
 w3m-dist/
 w3m-prefix/
-
+# Playground
 test/
-
+# Bluetooth
 bluesz-dist/
 bluesz-src/
 bluesz-stage/
-
+# Disk
 rlos-disk/rootfs-staging/
 
 fw-src/
@@ -67,13 +73,10 @@ gc-dist/
 iwd-dist/
 iwd-prefix/
 nettools-dist/
+# RlOS Atom
 rlos-atom/bwrap-dist/
 rlos-atom/atom-rootfs/
 
-# Stale autoconf output from an out-of-tree XPM build. This repo has no
-# configure and no script reads these, so there is nothing to regenerate them
-# from - they are leftovers from cxpm/sxpm and safe to delete at any time.
-# Makefile stays bare so it also covers the per-directory ones.
 /config.h
 config.log
 config.status
@@ -84,17 +87,15 @@ xpm.pc
 Makefile
 .deps/
 
-# Built artefacts
 .kernel-build.lock
 x11-drv/build/
-
-# rlt --compile output - regenerate with `rlt --compile nano.rl`. The .rl
-# sources alongside them are the tracked inputs.
+# Testing
 rl_programs/nano/nano
 rl_programs/nano/nano.c
 rl_programs/nano/rl_runtime.c
 rl_programs/nano/rl_runtime.h
 rl_programs/nano/miniaudio.h
-
+# Init Binary
 rlos-initramfs/init
+# bwrap image for RLOS Atom
 rlos-atom/atom-rootfs.tar.gz
