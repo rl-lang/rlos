@@ -57,25 +57,30 @@ SIZE="16G"
 
 usage() {
     cat >&2 << EOF
-usage: sudo $0 /dev/sdX [--size SIZE]
+usage: sudo $0 /dev/sdX [--size SIZE] [-x|--x11]
 
 Installs rlOS to a whole block device. THE DEVICE IS ERASED.
 
   /dev/sdX      the USB stick, e.g. /dev/sda or /dev/sdb
   --size SIZE   root partition size (default: 16G). Accepts 8G, 32G, 512M,
                 or 'max' to use the rest of the stick.
+  -x, --x11     install the X11 desktop. Without it the stick boots to the
+                text console, even when x11-dist/ exists. Requires
+                build_x11.sh to have been run.
 
 Find it with 'lsblk -o NAME,SIZE,MODEL,TRAN,MOUNTPOINTS'. The one with TRAN=usb
 and nothing mounted is usually the stick.
 EOF
 }
 
+WITH_X11=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --size)
             [[ $# -ge 2 ]] || { echo "error: --size needs a value" >&2; exit 1; }
             SIZE="$2"; shift 2 ;;
         --size=*) SIZE="${1#*=}"; shift ;;
+        -x|--x11) WITH_X11="-x"; shift ;;
         -h|--help) usage; exit 0 ;;
         -*) echo "error: unknown option '$1'" >&2; usage; exit 1 ;;
         *)
@@ -94,7 +99,7 @@ die() { echo "error: $*" >&2; exit 1; }
 info() { echo "==> $*"; }
 
 if [[ $EUID -ne 0 ]]; then
-    echo "usage: sudo $0 /dev/sdX [--size SIZE]" >&2
+    echo "usage: sudo $0 /dev/sdX [--size SIZE] [-x|--x11]" >&2
     die "must run as root (mkfs and mount need it)"
 fi
 
@@ -371,7 +376,7 @@ info "root PARTUUID: $ROOT_PARTUUID"
 # ---------------------------------------------------------------------------
 # Populate
 # ---------------------------------------------------------------------------
-info "assembling rootfs"
+info "assembling rootfs (${WITH_X11:-text-only})"
 # Staged next to this script rather than in /tmp: /tmp is a RAM-backed tmpfs on a
 # lot of machines and the assembled rootfs is ~160 MB, which can fail there for
 # no obvious reason. assemble-rootfs.sh rm -rf's and re-creates the target itself.
@@ -387,7 +392,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-"$SCRIPT_DIR/../assemble-rootfs.sh" "$STAGE"
+"$SCRIPT_DIR/../assemble-rootfs.sh" $WITH_X11 "$STAGE"
 
 info "copying rootfs onto $P3"
 mount "$P3" "$ROOT_MNT"

@@ -50,6 +50,9 @@ ovmf_vars.fd
 x11-src/
 x11-prefix/
 x11-dist/
+# Tools with no X11 dependency (sudo, ttyrec, ttyplay, rlin, rlperf)
+base-src/
+base-dist/
 # TUI Web Browser
 w3m-src/
 w3m-dist/

@@ -5,16 +5,41 @@
 # bzImage to /boot -> grub.cfg (root by LABEL) -> grub-install (BIOS) ->
 # unmount. No repartitioning (see mkdisk.sh). Re-runnable anytime.
 # Runs from rlos-disk/; shared inputs live one level up in rlos/.
+#
+# Usage:
+#   sudo ./install.sh          text-only image (the default)
+#   sudo ./install.sh -x       same, plus the X11 desktop
 set -euo pipefail
 
-# Always operate in this script's directory, wherever it is invoked from.
-cd "$(dirname "${BASH_SOURCE[0]}")"
-
+# SCRIPT_DIR has to be resolved BEFORE the cd below: afterwards, a relative
+# BASH_SOURCE (./rlos-disk/install.sh, the form README documents) no longer
+# resolves from the new directory and the cd fails.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+
 OUT="disk.img"
 KERNEL="../kernel-images/rlos/bzImage"
 LABEL="rlos-root"
 WORK="rootfs-staging"
+
+usage() {
+    cat >&2 << EOF
+usage: install.sh [-x|--x11]
+
+  -x, --x11   include the X11 desktop on the disk. Without it the disk boots
+              to the text console, even when x11-dist/ exists. Requires
+              build_x11.sh to have been run.
+EOF
+}
+
+WITH_X11=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -x|--x11) WITH_X11="-x"; shift ;;
+        -h|--help) usage; exit 0 ;;
+        *) echo "error: unknown argument '$1'" >&2; usage; exit 1 ;;
+    esac
+done
 
 for tool in losetup grub-install; do
     if ! command -v "$tool" > /dev/null 2>&1; then
@@ -32,8 +57,8 @@ if [[ ! -f "$KERNEL" ]]; then
     exit 1
 fi
 
-echo "assembling fresh rootfs..."
-"$SCRIPT_DIR/../assemble-rootfs.sh" "$WORK"
+echo "assembling fresh rootfs (${WITH_X11:-text-only})..."
+"$SCRIPT_DIR/../assemble-rootfs.sh" $WITH_X11 "$WORK"
 
 LOOP="$(sudo losetup --show -fP "$OUT")"
 # shellcheck disable=SC2064
@@ -99,3 +124,8 @@ sudo losetup -d "$LOOP"
 trap - EXIT
 
 echo "done: $OUT ready - boot with ./run_qemu.sh"
+if [[ -n "$WITH_X11" ]]; then
+    echo "      backend: X11 desktop (built with -x)"
+else
+    echo "      backend: text-only (no -x)"
+fi

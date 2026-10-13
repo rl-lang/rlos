@@ -1369,10 +1369,11 @@ static void run_x_helper(const char *path) {
 /* X_CONF is defined next to gen_input_config() above, together with
  * X_BASE_CONF, because that function is what writes it. */
 /* THE VIRTUAL TERMINAL LAYOUT. Fixed here and relied on by start_vt_shells()
-   * below, which puts a login shell on tty3-tty6, so the two must agree.
+   * below, which puts login shells on tty3-tty6, so the two must agree.
    *
    *   Ctrl-Alt-F1   tty1   boot log + the root rescue shell
-   *   Ctrl-Alt-F2   tty2   the X11 desktop
+   *   Ctrl-Alt-F2   tty2   the X11 desktop, or a login shell when the image
+   *                          was built without -x and has no Xorg to run
    *   Ctrl-Alt-F3   tty3   login shell as uid 1000
    *   Ctrl-Alt-F4   tty4   login shell as uid 1000
    *   Ctrl-Alt-F5   tty5   login shell as uid 1000
@@ -1389,7 +1390,9 @@ static void run_x_helper(const char *path) {
    * X is on vt2 rather than vt7 so the extra shells fit on consecutive keys
    * F3-F6 with no gap, which is the whole point of them being there. */
   #define X_VT      "vt2"
-  /* First and last extra login-shell VT. Inclusive. */
+  /* First and last extra login-shell VT. Inclusive. The first is VT_SHELL_FIRST
+   * when X has vt2, and VT_SHELL_MIN when the image has no X and vt2 is free. */
+  #define VT_SHELL_MIN   2
   #define VT_SHELL_FIRST 3
   #define VT_SHELL_LAST  6
 
@@ -3085,7 +3088,8 @@ supervise(procs, &nprocs, { "ash", "/bin/ash",
    * They exist because there is no getty in this image, and without something
    * attached a VT is simply blank - switching to F3 on a machine with only the
    * tty1 shell and X on vt2 gives a black screen and no way back to a prompt,
-   * which looks exactly like a hang.
+   * which looks exactly like a hang. Without X there is no vt2 to skip past, so
+   * the range starts one key earlier (see VT_SHELL_MIN).
    *
    * Registered here rather than after the X block, and deliberately outside the
    * use_x branch, for the same reason the rescue shell above is: these must work
@@ -3093,10 +3097,10 @@ supervise(procs, &nprocs, { "ash", "/bin/ash",
    * wanted. needs_x is 0 throughout.
    *
    * They run as uid 1000, not root. The rescue shell on tty1 stays root - it is
-   * the last thing standing if the desktop fails - but four always-resident root
-   * shells on keys a user can reach by muscle memory is more than the situation
-   * needs. sudo is present and working (secure_sudo_files() above), so admin work
-   * is one prefix away.
+   * the last thing standing if the desktop fails - but that many always-resident
+   * root shells on keys a user can reach by muscle memory is more than the
+   * situation needs. sudo is present and working (secure_sudo_files() above), so
+   * admin work is one prefix away.
    *
    * vt_shell_envp rather than child_envp, because child_envp sets HOME=/root: a
    * uid-1000 shell would try to keep its history and create scratch files in a
@@ -3106,19 +3110,28 @@ supervise(procs, &nprocs, { "ash", "/bin/ash",
    *
    * ash_argv is shared by all of them deliberately: it has static storage
    * duration, which is the property that fixed the argv corruption bug, and
-   * sharing one array for four children that take no arguments cannot make it
-   * stale. Only name and ctty differ per entry. */
+   * sharing one array for several children that take no arguments cannot make
+   * it stale. Only name and ctty differ per entry. */
+  /* F2 is the desktop only when the image has one. Built without -x there is
+   * no Xorg, so vt2 is free and becomes just another login shell rather than a
+   * dead key next to four that work. */
+  int have_xorg = (access("/bin/Xorg", X_OK) == 0);
+  int vt_shell_first = have_xorg ? VT_SHELL_FIRST : VT_SHELL_MIN;
+  int n_vt_shells = VT_SHELL_LAST - vt_shell_first + 1;
+
   /* Per-VT storage for the table below. It has to outlive this scope: procs[]
    * keeps a pointer to both strings for the lifetime of the run, and a loop-local
-   * array would be reused by the next iteration. */
+   * array would be reused by the next iteration. Sized for the larger of the two
+   * ranges (VT_SHELL_MIN..VT_SHELL_LAST); with X present the first entries are
+   * simply never filled. */
   static struct {
     char name[8];   /* "tty3" - strcmp()'d in the loop and in the table dump, so
                      * deliberately NOT "/dev/tty3" */
     char ctty[16];  /* "/dev/tty3" */
-  } vt_shells[VT_SHELL_LAST - VT_SHELL_FIRST + 1];
+  } vt_shells[VT_SHELL_LAST - VT_SHELL_MIN + 1];
 
-  for (int k = 0; k < VT_SHELL_LAST - VT_SHELL_FIRST + 1; k++) {
-    int vt = VT_SHELL_FIRST + k;
+  for (int k = 0; k < n_vt_shells; k++) {
+    int vt = vt_shell_first + k;
     char *q = put_str(vt_shells[k].name, vt_shells[k].name + sizeof(vt_shells[k].name), "tty");
     *put_dec(q, vt) = '\0';
     q = put_str(vt_shells[k].ctty, vt_shells[k].ctty + sizeof(vt_shells[k].ctty), "/dev/tty");
@@ -3126,7 +3139,10 @@ supervise(procs, &nprocs, { "ash", "/bin/ash",
     supervise(procs, &nprocs, { vt_shells[k].name, "/bin/ash",
         ash_argv, vt_shell_envp, 0, 1, -1, 0, 0, vt_shells[k].ctty });
   }
-  warn("init: vt layout: F1 log, F2 desktop, F3-F6 shells\n");
+  if (have_xorg)
+    warn("init: vt layout: F1 log, F2 desktop, F3-F6 shells\n");
+  else
+    warn("init: vt layout: F1 log, F2-F6 shells (no X11: built without -x)\n");
 
   int use_x = 0;
 
@@ -3397,8 +3413,18 @@ supervise(procs, &nprocs, { "ash", "/bin/ash",
     supervise(procs, &nprocs, { "mlterm", "/bin/mlterm",
         mlterm_argv, x_envp, 1, 1, -1, 0, 0, NULL });
   } else {
-    if (access("/bin/Xorg", X_OK) == 0)
+    if (access("/bin/Xorg", X_OK) == 0) {
       warn("init: X display did not come up - falling back to the text console\n");
+    } else {
+      /* No Xorg in the image at all, as opposed to one that failed to start.
+       * The two need different advice: the first is a hardware/driver problem
+       * the rlin/rlperf diagnostics exist for, the second is simply that the
+       * image was assembled without -x. Say which, or the user is left hunting
+       * a graphics fault that was never in the picture. */
+      warn("init: no X11 in this image - text console only.\n");
+      warn("init:   built without -x (see assemble-rootfs.sh); rebuild with -x\n");
+      warn("init:   for the i3 + mlterm desktop.\n");
+    }
     /* No shell is added here: the rescue ash registered earlier runs on tty0
      * unconditionally, so this branch already has a prompt waiting. Adding a
      * second one would put two interactive ashes on the same console, racing

@@ -1,10 +1,40 @@
 #!/usr/bin/env bash
 # Build a hybrid live ISO (BIOS + UEFI, dd-able to a USB stick):
 # GRUB vehicle carrying bzImage + initramfs.gz, root stays in RAM.
+#
+# Usage:
+#   ./mkiso.sh              text-only image (the default)
+#   ./mkiso.sh -x           same, plus the X11 desktop
+#   ./mkiso.sh --no-rebuild pack the existing initramfs.gz untouched
 set -euo pipefail
 
 # Always operate in this script's directory, wherever it is invoked from.
 cd "$(dirname "${BASH_SOURCE[0]}")"
+
+usage() {
+    cat >&2 << EOF
+usage: mkiso.sh [-x|--x11] [--no-rebuild]
+
+  -x, --x11       include the X11 desktop in the ISO. Without it the ISO is
+                  text-only. Requires build_x11.sh to have been run.
+  --no-rebuild    pack the existing rlos-initramfs/initramfs.gz as-is instead
+                  of rebuilding it. For iterating on a hand-edited initramfs;
+                  the ISO's contents are then whatever that file holds.
+EOF
+}
+
+WITH_X11=0
+REBUILD=1
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -x|--x11) WITH_X11=1; shift ;;
+        --no-rebuild) REBUILD=0; shift ;;
+        -h|--help) usage; exit 0 ;;
+        *) echo "error: unknown argument '$1'" >&2; usage; exit 1 ;;
+    esac
+done
+X11_FLAG=""
+[[ "$WITH_X11" == "1" ]] && X11_FLAG="-x"
 
 # Prefer the vendored xorriso (built by ../build_xorriso.sh) when present -
 # Gentoo ships no xorriso ebuild, so the host one usually does not exist.
@@ -14,6 +44,7 @@ fi
 
 KERNEL="../kernel-images/rlos/bzImage"
 INITRAMFS="../rlos-initramfs/initramfs.gz"
+BUILD_INITRAMFS="../rlos-initramfs/build_initramfs.sh"
 STAGE="isostage"
 OUT="rlos.iso"
 
@@ -28,6 +59,20 @@ done
 if [[ ! -f "$KERNEL" ]]; then
     echo "error: $KERNEL not found - run ../compile_kernel.sh first" >&2
     exit 1
+fi
+
+# The initramfs is the whole system: the rootfs lives inside it, so X11 has to
+# be decided here or not at all. Rebuild it rather than trusting whatever the
+# last run left behind, otherwise "no -x" would silently inherit a desktop.
+if [[ "$REBUILD" == "1" ]]; then
+    echo "building initramfs (${X11_FLAG:-text-only})..."
+    "$BUILD_INITRAMFS" $X11_FLAG
+elif [[ ! -f "$INITRAMFS" ]]; then
+    echo "error: $INITRAMFS not found and --no-rebuild was given" >&2
+    echo "hint: drop --no-rebuild, or run ../rlos-initramfs/build_initramfs.sh" >&2
+    exit 1
+else
+    echo "--no-rebuild: packing $INITRAMFS as-is, contents unverified"
 fi
 
 if [[ ! -f "$INITRAMFS" ]]; then
@@ -83,6 +128,15 @@ menuentry "rlOS (live, debug)" {
   linux /boot/bzImage rootwait console=ttyS0,115200 console=tty0 loglevel=7 earlyprintk=serial,ttyS0,115200 fbcon=font:SUN12x22
   initrd /boot/initramfs.gz
 }
+EOF
+
+# Only emitted for -x. The entry runs rlin, which is staged by
+# build_base_tools.sh into base-dist/ and so is present in both backends, but
+# it is a diagnostic for the X input driver: without X starting there is no
+# driver to diagnose, and init's rlos.diag path would report on an input stack
+# nothing is going to consume.
+if [[ "$WITH_X11" == "1" ]]; then
+cat >> "$STAGE/boot/grub/grub.cfg" << 'EOF'
 
 # Input diagnostics, for when the desktop comes up but nothing responds to the
 # keyboard or touchpad. rlos.diag makes init report what the input layer
@@ -98,6 +152,10 @@ menuentry "rlOS (live, diagnose input)" {
   linux /boot/bzImage rootwait console=tty0 console=ttyS0,115200 loglevel=3 fbcon=font:SUN12x22 rlos.diag
   initrd /boot/initramfs.gz
 }
+EOF
+fi
+
+cat >> "$STAGE/boot/grub/grub.cfg" << 'EOF'
 
 # One-shot diagnostics: run /bin/fbtest as PID 1 instead of the real init, so
 # the framebuffer probe reports and the machine stops. Needs a display device
@@ -129,5 +187,13 @@ if [[ ! -f "$OUT" ]]; then
 fi
 
 echo "done: $OUT ($(du -h "$OUT" | cut -f1))"
+if [[ "$WITH_X11" == "1" ]]; then
+    echo "      backend: X11 desktop (built with -x)"
+else
+    echo "      backend: text-only (no -x)"
+fi
+if [[ "$REBUILD" == "0" ]]; then
+    echo "      note: --no-rebuild, so this reflects initramfs.gz's previous contents"
+fi
 echo "hint: write to USB with: sudo dd if=$OUT of=/dev/sdX bs=4M status=progress oflag=sync"
 echo "      (triple-check /dev/sdX first - dd to the wrong device destroys data)"

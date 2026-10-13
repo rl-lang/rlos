@@ -11,13 +11,13 @@
 #   /sbin/init on disk boots and follows /init on initramfs boots.
 #
 # Usage:
-#   ./assemble-rootfs.sh <target-dir>     # e.g. ./assemble-rootfs.sh /tmp/rootfs
+#   ./assemble-rootfs.sh <target-dir>       # text-only image (the default)
+#   ./assemble-rootfs.sh -x <target-dir>   # same, plus the X11 desktop
 # Run from anywhere; rlos-relative inputs resolve from the script's location.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TARGET="${1:?usage: assemble-rootfs.sh <target-dir>}"
 PROGRAMS="$SCRIPT_DIR/rl_programs"
 SCRIPTS="$SCRIPT_DIR/scripts"
 
@@ -29,6 +29,7 @@ GCC_DIST="$SCRIPT_DIR/gcc-dist"
 BINUTILS_DIST="$SCRIPT_DIR/binutils-dist"
 BB_DIST="$SCRIPT_DIR/busybox-dist"
 X11_DIST="$SCRIPT_DIR/x11-dist"
+BASE_DIST="$SCRIPT_DIR/base-dist"
 NETTOOLS_DIST="$SCRIPT_DIR/nettools-dist"
 DBUS_DIST="$SCRIPT_DIR/dbus-dist"
 IWD_DIST="$SCRIPT_DIR/iwd-dist"
@@ -39,14 +40,52 @@ W3M_DIST="$SCRIPT_DIR/w3m-dist"
 ATOM_IMAGE="$SCRIPT_DIR/rlos-atom/atom-rootfs.tar.gz"
 BWRAP_DIST="$SCRIPT_DIR/rlos-atom/bwrap-dist"
 
-# --- checking ---
-# The X11 stack is optional. If x11-dist/ is present the guest boots into an
-# i3 + mlterm session; if it is absent the text console is the whole system and
-# nothing here runs. Keeping it optional means the minimal image still builds
-# on a machine that never ran build_x11.sh.
+usage() {
+    cat >&2 << EOF
+usage: assemble-rootfs.sh [-x|--x11] <target-dir>
+
+Assembles the shared rlos userspace tree into <target-dir>. The same tree
+becomes the initramfs and the disk root, so the two can never drift.
+
+  -x, --x11   include the X11 desktop from x11-dist/ (Xorg + i3 + mlterm).
+              Without it the image is text-console only, even when x11-dist/
+              exists - the presence of the build tree does not decide what
+              ships. Requires build_x11.sh to have been run.
+EOF
+}
+
+# --- options ---
+# X11 is opt-in, not auto-detected: init.c gates the desktop on /bin/Xorg
+# existing, so leaving it unstaged is all it takes to get a text-only boot.
 WITH_X11=0
-if [[ -d "$X11_DIST/bin" ]]; then
-    WITH_X11=1
+TARGET=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -x|--x11) WITH_X11=1; shift ;;
+        -h|--help) usage; exit 0 ;;
+        -*) echo "error: unknown option '$1'" >&2; usage; exit 1 ;;
+        *)
+            if [[ -n "$TARGET" ]]; then
+                echo "error: too many arguments (already have '$TARGET')" >&2
+                usage
+                exit 1
+            fi
+            TARGET="$1"
+            shift ;;
+    esac
+done
+if [[ -z "$TARGET" ]]; then
+    usage
+    exit 1
+fi
+
+# --- checking ---
+# base-dist/ (sudo, ttyrec, rlin, rlperf) is NOT gated on -x: those are not
+# desktop tools and the text console needs them too.
+if [[ "$WITH_X11" == "1" && ! -d "$X11_DIST/bin" ]]; then
+    echo "error: -x was given but $X11_DIST/bin does not exist" >&2
+    echo "hint: run build_x11.sh first, or drop -x for a text-only image." >&2
+    exit 1
 fi
 
 # Init
@@ -170,6 +209,25 @@ if [[ -d "$SCRIPT_SRC" ]]; then
     fi
 fi
 
+# Tools with no X11 dependency, staged into every image regardless of -x.
+# Separate from x11-dist/ so the -x flag cannot take sudo and ttyrec with it.
+if [[ -d "$BASE_DIST" ]]; then
+    echo "installing base tools from base-dist/ ($(du -sh "$BASE_DIST" | cut -f1))..."
+    cp -a "$BASE_DIST/." "$TARGET/"
+    N_BASE=0
+    for t in sudo ttyrec ttyplay rlin rlperf; do
+        if [[ -x "$TARGET/usr/bin/$t" ]]; then
+            N_BASE=$((N_BASE + 1))
+        else
+            echo "warning: base-dist/usr/bin/$t missing" >&2
+        fi
+    done
+    echo "base tools: $N_BASE/5 staged (sudo ttyrec ttyplay rlin rlperf)"
+else
+    echo "no base-dist/ - no sudo, ttyrec, ttyplay, rlin or rlperf"
+    echo "  (run build_base_tools.sh to add them; they are needed on the text console too)"
+fi
+
 # setting up x11 stuff if exist
 if [[ "$WITH_X11" == "1" ]]; then
     echo "installing X11 stack from x11-dist/ ($(du -sh "$X11_DIST" | cut -f1))..."
@@ -201,7 +259,7 @@ if [[ "$WITH_X11" == "1" ]]; then
       fi
       echo "X11 installed (config: etc/fonts/fonts.conf, etc/X11/xorg.conf.{ms,fbdev}.base)"
 else
-    echo "no x11-dist/ - building the text-only image (run build_x11.sh for X11)"
+    echo "text-only image (-x not given) - no Xorg, no i3, no mlterm"
 fi
 
 # RLOS Atom and bwrap
@@ -426,7 +484,13 @@ echo "busybox: rescue shell staged (busybox ash, rlsh remains the default)"
 # Needed Libraries
 echo "copying runtime library dependencies for everything staged..."
 echo "(preserving absolute paths + flat /usr/lib64, no ld.so.cache in guest)"
-DEPS="$(for tool_bin in "$TARGET"/bin/* "$TARGET"/usr/libexec/git-core/*; do
+# base-dist's binaries are named explicitly rather than globbing
+# $TARGET/usr/bin/*, which also holds gcc, w3m, fastfetch and the nettools
+# binaries - widening the closure every time one of those dists changes. Their
+# libraries come from other dists (sudo->nettools/w3m, ttyrec->gcc), so check
+# them rather than assume.
+DEPS="$(for tool_bin in "$TARGET"/bin/* "$TARGET"/usr/libexec/git-core/* \
+                   "$BASE_DIST"/usr/bin/*; do
     [[ -f "$tool_bin" && -x "$tool_bin" ]] || continue
     ldd "$tool_bin" 2>/dev/null | awk '{print $3}'
 done | grep '^/' | sort -u || true)"

@@ -24,7 +24,6 @@
 
 #   usr/lib64/xorg/modules/     fbdev_drv.so, fbdevhw.so + core video/input
 #   usr/lib64/                  the ldd closure, flat (guest has no ld.so.cache)
-#   usr/bin/sudo                privilege escalation for the `user` account
 #   usr/bin/xkbcomp             the server shells out to this at startup
 #   usr/share/X11/xkb/          xkeyboard-config (a real runtime requirement)
 #   usr/share/fonts/            2x JetBrainsMono Nerd Font Mono
@@ -119,10 +118,10 @@ MLTERM_SRC="$X11_SRC/mlterm-${MLTERM_VER}"
 # needs giflib, which the host does not have. Three builds for one viewer; the
 # point of each pin is below.
 #
-# Sources are the Debian pool rather than upstream. Imlib2 and ttyrec have no
-# reachable GitHub home any more (git.enlightenment.org answers "Not found" for
-# every path, and the freedesktop gitlab sits behind an anti-bot challenge), and
-# the Debian pool carries verbatim upstream tarballs at pinned versions. Same
+# Sources are the Debian pool rather than upstream. Imlib2 has no reachable
+# GitHub home any more (git.enlightenment.org answers "Not found" for every
+# path, and the freedesktop gitlab sits behind an anti-bot challenge), and the
+# Debian pool carries verbatim upstream tarballs at pinned versions. Same
 # bytes upstream would have shipped, from a mirror that resolves.
 GIFLIB_VER="5.2.2"
 GIFLIB_URL="http://deb.debian.org/debian/pool/main/g/giflib/giflib_${GIFLIB_VER}.orig.tar.gz"
@@ -169,12 +168,6 @@ IMLIB2_LOADERS_KEEP="gif jpeg png"
 FEH_REF="3.13.1"
 FEH_URL="https://codeload.github.com/derf/feh/tar.gz/refs/tags/${FEH_REF}"
 FEH_MAKE_FLAGS="curl=0 xinerama=0 exif=0 magic=0 install_fonts=0 help=1"
-
-# ttyrec/ttyplay: terminal session recorder. No X, no GL, only a tty, so it is
-# built here for the desktop AND staged into atom, where it is the one capture
-# tool that works at all.
-TTYREC_VER="1.1.7.1"
-TTYREC_URL="http://deb.debian.org/debian/pool/main/t/ttyrec/ttyrec_${TTYREC_VER}.orig.tar.gz"
 
 # --- ffmpeg: screen capture (ffmpeg) and playback (ffplay) -------------------
 # One build covers both halves of "record a video and then watch it", because
@@ -292,22 +285,6 @@ BIBATA_URL="https://github.com/ful1e5/Bibata_Cursor/releases/download/${BIBATA_T
 FONT_FILES=("JetBrainsMonoNerdFontMono-Regular.ttf" "JetBrainsMonoNerdFontMono-Bold.ttf"
             "JetBrainsMonoNerdFontMono-Italic.ttf" "JetBrainsMonoNerdFontMono-BoldItalic.ttf")
 HOST_FONT_DIR="/usr/share/fonts/nerdfonts"
-
-# sudo: privilege escalation for the unprivileged desktop session. The desktop
-# now runs as the `user` account, so `sudo` is how anything root-owned gets
-# touched. Three configure choices are forced by what this guest is and are not
-# preferences:
-#
-#   --without-pam          there is no PAM in the image at all (no libpam, no
-#                          /etc/pam.d); a PAM build would fail to load it.
-#   --enable-static-sudoers  the normal sudoers policy is a dlopen'd plugin
-#                          (.so). Linking it into the sudo binary means there
-#                          is nothing to find on disk at run time.
-#   --disable-openssl/zlib  without these the only libraries sudo needs are
-#                          libcrypt, libmd and libc - all three tiny, and the
-#                          first two are otherwise not in the image.
-SUDO_VER="1.9.17p2"
-SUDO_URL="https://www.sudo.ws/files/sudo-${SUDO_VER}.tar.gz"
 
 # --- Colors ---
 if [ -t 1 ] && [ -t 2 ]; then
@@ -1212,28 +1189,6 @@ gcc -O2 -Wall -Wextra \
   || { fail "rlfc diagnostic failed to build"; exit 1; }
 ok "rlfc diagnostic built (run it to inspect the guest font match)"
 
-# Diagnostic for the input failure, for the same reason: the kernel boots at
-# loglevel=3, which hides input core's evdev registration messages, and the
-# build host's linux/.config is not evidence about the running bzImage. Only a
-# guest-side run can say whether the nodes are missing (kernel-side fix) or
-# present-and-unusable (driver-side fix). See x11-drv/rlin.c.
-gcc -O2 -Wall -Wextra \
-    -o "$X11_DIST/usr/bin/rlin" \
-    "$SCRIPT_DIR/x11-drv/rlin.c" \
-  || { fail "rlin input diagnostic failed to build"; exit 1; }
-ok "rlin input diagnostic built (run it to inspect guest evdev nodes)"
-
-# Performance probe, run by the user inside the running desktop. See
-# x11-drv/rlperf.c: the answer to "everything is laggy" cannot come from a boot
-# log, because the boot log goes to a serial port a laptop does not have and
-# the text console is behind Xorg's VT. It has to be a command they can type.
-# Needs no X libraries - just /proc and /dev/fb0.
-gcc -O2 -Wall -Wextra \
-    -o "$X11_DIST/usr/bin/rlperf" \
-    "$SCRIPT_DIR/x11-drv/rlperf.c" \
-  || { fail "rlperf diagnostic failed to build"; exit 1; }
-ok "rlperf diagnostic built (type 'rlperf' in the desktop)"
-
 # x11-drv/setrootcursor.c: Xorg refuses to theme the root cursor (dix/cursor.c
 # CreateRootCursor opens a font named "cursor"; there is no libXcursor support in
 # the server at all), so a client has to do it. This logic was a patch inside
@@ -1752,70 +1707,6 @@ if [ -n "$CONF_PROBLEM" ]; then
 fi
 ok "both xorg.conf templates checked: device+screen only, no input/ServerLayout"
 
-header "sudo ${SUDO_VER}"
-# Prefer a tarball the host already has (Gentoo's distfile cache) so the build
-# does not depend on sudo.ws being reachable; fall back to fetching it.
-SUDO_TARBALL="$X11_SRC/sudo-${SUDO_VER}.tar.gz"
-if [ ! -f "$SUDO_TARBALL" ]; then
-  if [ -f "/var/cache/distfiles/sudo-${SUDO_VER}.tar.gz" ]; then
-    cp "/var/cache/distfiles/sudo-${SUDO_VER}.tar.gz" "$SUDO_TARBALL"
-    ok "sudo tarball taken from the host distfile cache"
-  else
-    fetch "$SUDO_URL" "$SUDO_TARBALL" "sudo"
-  fi
-fi
-if [ ! -d "$X11_SRC/sudo-${SUDO_VER}" ]; then
-  tar -xf "$SUDO_TARBALL" -C "$X11_SRC"
-fi
-# sudo's tree is built in place (its Makefile is not comfortable out-of-tree),
-# into a throwaway copy so a re-run does not fight a previous configure.
-SUDO_BUILD="$X11_SRC/sudo-build"
-rm -rf "$SUDO_BUILD"
-cp -a "$X11_SRC/sudo-${SUDO_VER}" "$SUDO_BUILD"
-(
-  cd "$SUDO_BUILD"
-  run_quiet ./configure \
-      --prefix=/usr \
-      --libexecdir=/usr/libexec/sudo \
-      --with-rundir=/run/sudo \
-      --with-iologdir=/var/log/sudo-io \
-      --without-pam \
-      --enable-static-sudoers \
-      --disable-shared-libutil \
-      --disable-nls \
-      --disable-root-mailer \
-      --without-sendmail \
-      --without-lecture \
-      --without-ldap \
-      --without-sssd \
-      --without-kerb5 \
-      --disable-python \
-      --disable-openssl \
-      --disable-zlib \
-      --disable-gcrypt \
-      --without-interfaces
-  run_quiet make -j"$(nproc)"
-) || { fail "sudo build failed"; exit 1; }
-
-# libexecdir is still /usr/libexec/sudo in the configure paths, but with
-# static-sudoers the binary has the policy inside it and there are no plugins to
-# stage. Strip it: sudo is setuid, and a stripped binary is smaller to hold in
-# the initramfs.
-strip "$SUDO_BUILD/src/sudo" 2>/dev/null || true
-cp "$SUDO_BUILD/src/sudo" "$X11_DIST/usr/bin/sudo"
-# The setuid bit is set here so the file is executable-escalatable if the image
-# is ever unpacked by root; init ALSO re-asserts ownership and the setuid bit at
-# boot (secure_sudo_files in init.c), because the initramfs is packed by a
-# non-root user and cannot set the owner to 0. Both belt and braces, because
-# sudo refuses to start if either is wrong.
-chmod 4755 "$X11_DIST/usr/bin/sudo"
-# A stripped sudo that still needs three libraries is the whole story of the
-# --disable-* flags above; assert it, so a future dependency creeping in is a
-# build failure rather than a surprise in the closure.
-SUDO_LIBS="$(objdump -p "$X11_DIST/usr/bin/sudo" 2>/dev/null | sed -n 's/^ *NEEDED *//p' | grep '^lib' | sort | tr '\n' ' ')"
-ok "sudo built ($(du -h "$X11_DIST/usr/bin/sudo" | cut -f1))"
-info "sudo linkage: $SUDO_LIBS"
-
 # xauth: the X11 authentication cookie generator --------------------------
 #
 # This is what lets init replace Xorg's `-ac` with real authentication.
@@ -2119,51 +2010,6 @@ if objdump -p "$X11_DIST/usr/bin/feh" | grep -q "$X11_PREFIX"; then
   fail "feh has a DT_NEEDED pointing into $X11_PREFIX - host path leaked"
 fi
 ok "feh staged ($(du -h "$X11_DIST/usr/bin/feh" | cut -f1), $FEH_MAKE_FLAGS)"
-
-header "ttyrec ${TTYREC_VER} (terminal sessions; also goes into atom)"
-# No X and no GL: it reads and writes a tty, so unlike everything else here it
-# works headless. That is why it is built once here and staged into atom too -
-# in a container there is no X server, so this is the only capture tool that
-# functions at all.
-#
-# This is Debian's packaging of OVH's fork, which unpacks as ovh-ttyrec-1.1.7.1/
-# - not ttyrec-1.1.7.1/ - so --strip-components=1 is used to get a stable path
-# rather than hardcoding a name that tracks whoever last repackaged it.
-fetch "$TTYREC_URL" "$X11_SRC/ttyrec-${TTYREC_VER}.tar.gz" "ttyrec"
-if [ ! -f "$X11_SRC/ttyrec/Makefile" ]; then
-  rm -rf "$X11_SRC/ttyrec"
-  mkdir -p "$X11_SRC/ttyrec"
-  tar -xf "$X11_SRC/ttyrec-${TTYREC_VER}.tar.gz" -C "$X11_SRC/ttyrec" \
-    --strip-components=1 || { fail "ttyrec did not unpack"; exit 1; }
-fi
-TTYREC_SRC="$X11_SRC/ttyrec"
-[ -x "$TTYREC_SRC/configure" ] || { fail "ttyrec has no configure"; exit 1; }
-# zstd stays ENABLED, and that is forced rather than chosen. NO_ZSTD=1 looks like
-# the obvious way to keep ttyrec dependency-free, and it does stop configure
-# adding compress_zstd.o to the link line - but this fork's compress.c calls
-# fclose_wrapper_zstd unconditionally, so NO_ZSTD=1 yields a ttyrec that does not
-# link at all:
-#
-#   compress.c:(.text+0x2c): undefined reference to `fclose_wrapper_zstd'
-#
-# That is a bug in OVH's fork (the variable is read from the environment, not
-# from a positional argument, so passing it after --prefix does nothing anyway).
-# The consequence to design around: ttyrec has a DT_NEEDED on libzstd.so.1, so
-# staging it into atom means staging libzstd alongside it. That is 754K, already
-# present in the desktop image, and still cheaper than a second build of ttyrec
-# without compression - which is the alternative if one binary has to serve both
-# desktop and container.
-run_quiet "$TTYREC_SRC/configure" --prefix=/usr
-run_quiet make -C "$TTYREC_SRC" -j"$JOBS"
-for t in ttyrec ttyplay; do
-  [ -x "$TTYREC_SRC/$t" ] || { fail "ttyrec: $t not built"; exit 1; }
-  install -m 0755 "$TTYREC_SRC/$t" "$X11_DIST/usr/bin/$t"
-done
-# ttyrec must stay dependency-free: if it grew a DT_NEEDED, staging it into atom
-# would drag libraries into the container that the desktop image happens to have
-# but atom deliberately does not.
-TTYREC_DT="$(objdump -p "$X11_DIST/usr/bin/ttyrec" | sed -n 's/^ *NEEDED *//p' | grep -vE 'ld-linux|linux-vdso' | tr '\n' ' ')"
-ok "ttyrec + ttyplay staged ($(du -h "$X11_DIST/usr/bin/ttyrec" | cut -f1)); links: ${TTYREC_DT:-nothing beyond libc}"
 
 header "ffmpeg ${FFMPEG_VER} (screen capture + ffplay)"
 # GPL-2.0-or-later via libx264; see the pin's comment for why that is the right
@@ -2547,7 +2393,7 @@ ok "x11-dist ready ($(du -sh "$X11_DIST" | cut -f1))"
 info "layout:"
 find "$X11_DIST" -maxdepth 3 -type d | sort | sed 's/^/         /'
 info "binaries:"
-for b in Xorg i3 i3bar i3-msg mlterm setrootcursor setrootbg sudo; do
+for b in Xorg i3 i3bar i3-msg mlterm setrootcursor setrootbg; do
   if [ -f "$X11_DIST/bin/$b" ]; then
     printf "         %-14s %s\n" "$b" "$(du -h "$X11_DIST/bin/$b" | cut -f1)"
   fi
@@ -2560,7 +2406,7 @@ done
 # nonzero, which under `set -o pipefail` aborted the whole build in the results
 # section - after all the real work had already succeeded. Asking the filesystem
 # also keeps this honest if a binary moves again.
-for b in i3 i3bar mlterm setrootcursor setrootbg sudo; do
+for b in i3 i3bar mlterm setrootcursor setrootbg; do
   info "$b linkage:"
   p="$(find "$X11_DIST" -type f -name "$b" -perm -u+x | head -1)"
   if [ -z "$p" ]; then

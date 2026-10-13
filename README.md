@@ -143,10 +143,25 @@ symlinks `cc -> gcc`.
 
 ## Run
 
+Every build target takes `-x` / `--x11` to include the desktop. **Without it you
+get the text-only image**, even if `build_x11.sh` has been run - X11 is opt-in,
+not auto-detected, so what ships is decided by what you asked for rather than by
+what happens to be lying in `x11-dist/`. That is worth ~91M: the ISO is 187M with
+the desktop and about 96M without.
+
+```text
+                       text-only        with -x
+  initramfs.gz         ~59M             144M
+  rlos.iso             ~96M             187M
+  boot menu            4 entries        5 entries
+  F2                   login shell      the desktop
+```
+
 ### initramfs (fastest loop)
 
 ```bash
-./rlos-initramfs/build_initramfs.sh
+./rlos-initramfs/build_initramfs.sh       # text-only
+./rlos-initramfs/build_initramfs.sh -x    # with the desktop
 ./rlos-initramfs/run_qemu.sh
 ```
 
@@ -156,13 +171,22 @@ symlinks `cc -> gcc`.
 ### Live ISO
 
 ```bash
-./build_xorriso.sh        # once: vendored xorriso -> host-tools/
-./rlos-iso/mkiso.sh
-./rlos-iso/run_qemu.sh        # BIOS (SeaBIOS)
-./rlos-iso/run_qemu_uefi.sh   # UEFI (OVMF)
+./build_xorriso.sh              # once: vendored xorriso -> host-tools/
+./rlos-iso/mkiso.sh             # text-only
+./rlos-iso/mkiso.sh -x          # with the desktop
+./rlos-iso/run_qemu.sh          # BIOS (SeaBIOS)
+./rlos-iso/run_qemu_uefi.sh     # UEFI (OVMF)
 ```
 
 `mkiso.sh` auto-prepends `host-tools/bin` to `PATH`, so no environment setup is needed.
+It also rebuilds `initramfs.gz` itself, because that file *is* the system - the
+desktop lives inside it, so `-x` has to reach `build_initramfs.sh` or the ISO
+would silently inherit whatever the last run left behind. Pass `--no-rebuild` to
+pack an existing `initramfs.gz` untouched (useful when iterating on a
+hand-edited one); the ISO then carries whatever that file happens to hold.
+
+The `rlOS (live, diagnose input)` menu entry appears only under `-x`: it reports
+on the X input driver, so there is nothing for it to diagnose otherwise.
 The resulting `rlos.iso` is hybrid - it boots from optical media *and* from a raw
 `dd` to a USB stick. Root still lives in RAM, so this is a stateless live session:
 writable, but every change evaporates on reboot.
@@ -191,7 +215,8 @@ so `/home/user` is still there after you power off.
 
 ```bash
 cd rlos-disk
-sudo ./mkusb.sh /dev/sdX                 # root partition = 16G (default)
+sudo ./mkusb.sh /dev/sdX                 # text-only, root partition = 16G (default)
+sudo ./mkusb.sh /dev/sdX -x              # with the desktop
 sudo ./mkusb.sh /dev/sdX --size 32G      # or 8G / 512M / max for rest-of-stick
 ```
 
@@ -256,8 +281,9 @@ UEFI Secure Boot must be disabled (GRUB is unsigned), same as the ISO.
 ### Persistent disk (QEMU)
 
 ```bash
-sudo ./rlos-disk/mkdisk.sh      # once: 1G GPT image
-sudo ./rlos-disk/install.sh     # rootfs + bzImage + GRUB, root=PARTUUID=...
+sudo ./rlos-disk/mkdisk.sh          # once: 1G GPT image
+sudo ./rlos-disk/install.sh         # text-only: rootfs + bzImage + GRUB, root=PARTUUID=...
+sudo ./rlos-disk/install.sh -x      # with the desktop
 ./rlos-disk/run_qemu.sh
 ```
 
@@ -269,11 +295,21 @@ real stick that also boots under UEFI.
 
 ## Architecture notes
 
-**One assembler, four targets.** `assemble-rootfs.sh <dir>` builds the userspace tree
-once; `build_initramfs.sh` packs it with cpio+gzip, `rlos-disk/install.sh` copies it onto
-ext4, `rlos-disk/mkusb.sh` copies it onto a real stick, and `rlos-iso/mkiso.sh` ships the
-initramfs alongside the kernel. When you add a coreutil, you edit `rl_programs/` and the
-packaging loop - all four targets pick it up.
+**One assembler, four targets.** `assemble-rootfs.sh [-x] <dir>` builds the
+userspace tree once; `build_initramfs.sh` packs it with cpio+gzip, `rlos-disk/install.sh`
+copies it onto ext4, `rlos-disk/mkusb.sh` copies it onto a real stick, and
+`rlos-iso/mkiso.sh` ships the initramfs alongside the kernel. All four forward
+`-x`, so the desktop is a decision made once rather than per-target. When you add
+a coreutil, you edit `rl_programs/` and the packaging loop - all four targets pick
+it up.
+
+**What `-x` actually gates.** Exactly one directory: `x11-dist/`. Plus two files
+copied from `etc-rlos/` (`i3.config`, `rlos-clock`), which `assemble-rootfs.sh`
+already staged inside its X11 branch. `base-dist/` is staged unconditionally. The
+ISO's GRUB menu loses one entry without it - `rlOS (live, diagnose input)`, which
+reports on the X input driver. Nothing else differs: no target passes an
+X-specific kernel argument, and `init.c` gates the desktop on `/bin/Xorg`
+existing, so absence is the whole switch.
 
 **Scripts are staged by glob.** Anything in `scripts/*.sh` lands in the guest's `/usr/bin`
 with the `.sh` suffix dropped, so `scripts/lsblk.sh` becomes `lsblk` and shadows nothing
@@ -306,11 +342,18 @@ path, so libraries from anywhere on the host resolve in-guest without a cache.
 
 ## X11 stack
 
-`build_x11.sh` is optional and independent of the text-mode build; the guest boots into
-i3 + mlterm when `x11-dist/` exists and into the text console when it does not. The
-stack is Xorg 21.1.24, i3 4.25, mlterm 3.9.1, libXft 2.3.9 and
-xkeyboard-config, plus the three libraries i3 needs and the host lacks: yajl 2.1.0,
-xcb-util-xrm 1.3 and libstartup-notification 0.12.
+`build_x11.sh` is independent of the text-mode build, but it does not decide on
+its own whether the desktop ships: an image gets the desktop when it was built
+with `-x` (see [Run](#run)). Without the flag the guest is text-console only and
+the guest boots into i3 + mlterm. The stack is Xorg 21.1.24, i3 4.25, mlterm
+3.9.1, libXft 2.3.9 and xkeyboard-config, plus the three libraries i3 needs and
+the host lacks: yajl 2.1.0, xcb-util-xrm 1.3 and libstartup-notification 0.12.
+
+**sudo, ttyrec, ttyplay, rlin and rlperf are not here.** They used to be, which
+meant they disappeared from text-only images along with the desktop even though
+none of them needs X. They are built by `build_base_tools.sh` into `base-dist/`,
+which `assemble-rootfs.sh` stages into *every* image. `rlfc` stayed, because it
+links libXft and libX11 and reports the X client's font resolution.
 
 **Two video drivers ship, because which one is right is a property of the machine.**
 On a GPU-less machine (or firmware that only exports a framebuffer) the fbdev DDX takes
@@ -388,7 +431,9 @@ depending on the thing being diagnosed.
 ```
 compile_kernel.sh          kernel build from kernel.config -> bzImage
 build_rl_bins.sh           6 rl binaries (no-media) -> rl-bins/
-assemble-rootfs.sh         shared userspace tree -> any target dir
+build_base_tools.sh        sudo/ttyrec/ttyplay/rlin/rlperf -> base-dist/
+                           (no X needed, so this is NOT gated on -x)
+assemble-rootfs.sh         shared userspace tree -> any target dir  [-x = desktop]
 build_binutils.sh          binutils -> binutils-dist/  (guest as + ld)
 build_gcc.sh               gcc (C-only+LTO) -> gcc-dist/  (guest `cc`)
 build_git.sh               git 2.55.0 -> git-dist/     (guest git)

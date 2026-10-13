@@ -63,9 +63,9 @@ sha_of() {
         giflib)                  echo "x11-src/giflib-5.2.2.tar.gz" ;;
         libXpm)                  echo "x11-src/libXpm-3.5.19.tar.gz" ;;
         feh)                     echo "x11-src/feh.tar.gz" ;;
-        ttyrec)                  echo "x11-src/ttyrec-1.1.7.1.tar.gz" ;;
+        ttyrec)                  echo "base-src/ttyrec-1.1.7.1.tar.gz" ;;
         Bibata-Modern-Ice)       echo "x11-src/Bibata-Modern-Ice.tar.xz" ;;
-        sudo)                    echo "x11-src/sudo-1.9.17p2.tar.gz" ;;
+        sudo)                    echo "base-src/sudo-1.9.17p2.tar.gz" ;;
         ffmpeg)                  echo "x11-src/ffmpeg-9.0.2.tar.xz" ;;
         busybox)                 echo "busybox-src/busybox-1.37.0.tar.bz2" ;;
         bluez)                   echo "bluesz-src/bluez-5.87.tar.gz" ;;
