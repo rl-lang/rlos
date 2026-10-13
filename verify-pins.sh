@@ -116,6 +116,7 @@ git_dir_of() {
         binutils)           echo "binutils" ;;
         git)                echo "git-src" ;;
         xfiles)             echo "xapps-src/xfiles" ;;
+        xmenu)              echo "xapps-src/xmenu" ;;
         xauth)              echo "x11-src/xauth" ;;
         xcb-util-xrm)       echo "x11-src/xcb-util-xrm" ;;
         libstartup-notification) echo "x11-src/libstartup-notification" ;;

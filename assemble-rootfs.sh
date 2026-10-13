@@ -234,7 +234,7 @@ if [[ -d "$SCRIPT_SRC" ]]; then
         n=$((n + 1))
     done
     if [[ -f "$ATOM_IMAGE" ]]; then
-        substep "home/user/scripts: $n scripts (atom + ffmpeg)"
+        substep "home/user/scripts: $n scripts (atom + capture + xmenu)"
     else
         substep "home/user/scripts: $n scripts (WARNING: $ATOM_IMAGE not built, atom-*.sh will not run)"
     fi

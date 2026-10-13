@@ -53,6 +53,14 @@ xfiles.repo=https://github.com/phillbush/xfiles.git
 xfiles.sha=c47a0d984caee93311cb081bd51a5a4a027c9f68
 xfiles.note=v1.1.1-100-gc47a0d9; deliberately past the last tag
 
+xmenu.repo=https://github.com/phillbush/xmenu.git
+xmenu.sha=bd012b1eee506ab3a21467be93acfec42b1785da
+xmenu.note=v4.6.1-51-gbd012b1; deliberately past the last tag. xmenu DOES
+  tag (v4.6.1), unlike its sibling xfiles, but the 51 commits since carry fixes
+  this image wants: negative menu positions and -p monitor specification, an
+  XParseGeometry-compatible -p argument, resource reload at runtime, and a
+  wait rather than a steal when another process holds the pointer grab.
+
 xauth.repo=https://gitlab.freedesktop.org/xorg/app/xauth.git
 xauth.sha=06c39dd0f7e19950e835a062edee8a2272e3270c
 xauth.note=replaces Xorg -ac; no release tag at pin time
