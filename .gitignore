@@ -50,6 +50,10 @@ ovmf_vars.fd
 x11-src/
 x11-prefix/
 x11-dist/
+# X11 GUI apps (feh, xfiles) - needed by every desktop backend, not just -x
+xapps-src/
+xapps-prefix/
+xapps-dist/
 # Tools with no X11 dependency (sudo, ttyrec, ttyplay, rlin, rlperf)
 base-src/
 base-dist/

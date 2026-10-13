@@ -60,9 +60,9 @@ sha_of() {
         libinput)                echo "x11-src/libinput-1.31.3.tar.gz" ;;
         eudev)                   echo "x11-src/eudev-3.2.15.tar.gz" ;;
         mlterm)                  echo "x11-src/mlterm-3.9.1.tar.gz" ;;
-        giflib)                  echo "x11-src/giflib-5.2.2.tar.gz" ;;
-        libXpm)                  echo "x11-src/libXpm-3.5.19.tar.gz" ;;
-        feh)                     echo "x11-src/feh.tar.gz" ;;
+        giflib)                  echo "xapps-src/giflib-5.2.2.tar.gz" ;;
+        libXpm)                  echo "xapps-src/libXpm-3.5.19.tar.gz" ;;
+        feh)                     echo "xapps-src/feh.tar.gz" ;;
         ttyrec)                  echo "base-src/ttyrec-1.1.7.1.tar.gz" ;;
         Bibata-Modern-Ice)       echo "x11-src/Bibata-Modern-Ice.tar.xz" ;;
         sudo)                    echo "base-src/sudo-1.9.17p2.tar.gz" ;;
@@ -115,11 +115,11 @@ git_dir_of() {
         gcc)                echo "gcc" ;;
         binutils)           echo "binutils" ;;
         git)                echo "git-src" ;;
-        xfiles)             echo "x11-src/xfiles" ;;
+        xfiles)             echo "xapps-src/xfiles" ;;
         xauth)              echo "x11-src/xauth" ;;
         xcb-util-xrm)       echo "x11-src/xcb-util-xrm" ;;
         libstartup-notification) echo "x11-src/libstartup-notification" ;;
-        imlib2)             echo "x11-src/imlib2" ;;
+        imlib2)             echo "xapps-src/imlib2" ;;
         linux)              return 1 ;;   # unpinned
         *)                  return 1 ;;
     esac

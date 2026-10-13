@@ -18,6 +18,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Sourced before the option parsing below, which reports errors through errmsg.
+source "$SCRIPT_DIR/build-lib.sh"
 PROGRAMS="$SCRIPT_DIR/rl_programs"
 SCRIPTS="$SCRIPT_DIR/scripts"
 
@@ -29,6 +31,8 @@ GCC_DIST="$SCRIPT_DIR/gcc-dist"
 BINUTILS_DIST="$SCRIPT_DIR/binutils-dist"
 BB_DIST="$SCRIPT_DIR/busybox-dist"
 X11_DIST="$SCRIPT_DIR/x11-dist"
+XAPPS_DIST="$SCRIPT_DIR/xapps-dist"
+WAYLAND_DIST="$SCRIPT_DIR/wayland-dist"
 BASE_DIST="$SCRIPT_DIR/base-dist"
 NETTOOLS_DIST="$SCRIPT_DIR/nettools-dist"
 DBUS_DIST="$SCRIPT_DIR/dbus-dist"
@@ -42,28 +46,40 @@ BWRAP_DIST="$SCRIPT_DIR/rlos-atom/bwrap-dist"
 
 usage() {
     cat >&2 << EOF
-usage: assemble-rootfs.sh [-x|--x11] <target-dir>
+usage: assemble-rootfs.sh [-x|--x11 | -w|--wayland] [-i|--installer] <target-dir>
 
 Assembles the shared rlos userspace tree into <target-dir>. The same tree
 becomes the initramfs and the disk root, so the two can never drift.
 
-  -x, --x11   include the X11 desktop from x11-dist/ (Xorg + i3 + mlterm).
-              Without it the image is text-console only, even when x11-dist/
-              exists - the presence of the build tree does not decide what
-              ships. Requires build_x11.sh to have been run.
+  -x, --x11       include the X11 desktop from x11-dist/ (Xorg + i3 + mlterm)
+  -w, --wayland   include the Wayland desktop from wayland-dist/ (sway + foot)
+  -i, --installer include the in-guest installer (rlos-install + sfdisk +
+                  the GRUB boot artifacts)
+
+With no backend flag the image is text-console only, even when the build trees
+exist - the presence of a build tree does not decide what ships.
+
+X11 and Wayland are mutually exclusive. The X11 GUI applications (feh, xfiles)
+come from xapps-dist/ and ship with EITHER desktop.
 EOF
 }
 
 # --- options ---
-# X11 is opt-in, not auto-detected: init.c gates the desktop on /bin/Xorg
-# existing, so leaving it unstaged is all it takes to get a text-only boot.
-WITH_X11=0
+# The desktop is opt-in, not auto-detected: init.c gates the desktop on the
+# compositor being present, so leaving it unstaged is all it takes to get a
+# text-only boot.
+BACKEND="text"
+WANT_X11=0
+WANT_WAYLAND=0
+WITH_INSTALLER=0
 TARGET=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        -x|--x11) WITH_X11=1; shift ;;
+        -x|--x11)     WANT_X11=1; shift ;;
+        -w|--wayland) WANT_WAYLAND=1; shift ;;
+        -i|--installer) WITH_INSTALLER=1; shift ;;
         -h|--help) usage; exit 0 ;;
-        -*) echo "unknown option '$1'" >&2; usage; exit 1 ;;
+        -*) errmsg "unknown option '$1'"; usage; exit 1 ;;
         *)
             if [[ -n "$TARGET" ]]; then
                 errmsg "too many arguments (already have '$TARGET')"
@@ -78,18 +94,39 @@ if [[ -z "$TARGET" ]]; then
     usage
     exit 1
 fi
-
-source "$SCRIPT_DIR/build-lib.sh"
+if [[ "$WANT_X11" == "1" && "$WANT_WAYLAND" == "1" ]]; then
+    errmsg "-x and -w are mutually exclusive - pick one desktop"
+    usage
+    exit 1
+fi
+if [[ "$WANT_X11" == "1" ]]; then
+    BACKEND="x11"
+elif [[ "$WANT_WAYLAND" == "1" ]]; then
+    BACKEND="wayland"
+fi
 
 header "Checking prerequisites"
 
-# base-dist/ (sudo, ttyrec, rlin, rlperf) is NOT gated on -x: those are not
-# desktop tools and the text console needs them too.
-if [[ "$WITH_X11" == "1" && ! -d "$X11_DIST/bin" ]]; then
-    errmsg "-x was given but $X11_DIST/bin does not exist"
-    echo "hint: run build_x11.sh first, or drop -x for a text-only image." >&2
-    exit 1
-fi
+# base-dist/ (sudo, ttyrec, rlin, rlperf) is NOT gated on a desktop: those are
+# not desktop tools and the text console needs them too.
+case "$BACKEND" in
+    x11)
+        if [[ ! -d "$X11_DIST/bin" ]]; then
+            errmsg "-x was given but $X11_DIST/bin does not exist"
+            info  "hint: run build_x11.sh first, or drop -x for a text-only image." >&2
+            exit 1
+        fi
+        ;;
+    wayland)
+        if [[ ! -d "$WAYLAND_DIST/bin" ]]; then
+            errmsg "-w was given but $WAYLAND_DIST does not exist"
+            info  "hint: run build_wl.sh first." >&2
+            info  "the Wayland backend is not implemented yet; -w is accepted so the" >&2
+            info  "plumbing can be built first, but it cannot produce an image yet." >&2
+            exit 1
+        fi
+        ;;
+esac
 
 # Init
 if [[ ! -x "$INIT_BIN" ]]; then
@@ -223,8 +260,40 @@ else
     echo "  (run build_base_tools.sh to add them; they are needed on the text console too)"
 fi
 
+# The X11 GUI applications (feh, xfiles). These ship with EITHER desktop
+# backend, not just -x: in a Wayland session they run under XWayland. They live
+# in their own dist rather than x11-dist/ precisely so the backend flag cannot
+# decide whether a file manager exists.
+if [[ "$BACKEND" != "text" ]]; then
+    if [[ -d "$XAPPS_DIST" ]]; then
+        step "installing X11 apps from xapps-dist/ ($(du -sh "$XAPPS_DIST" | cut -f1))..."
+        cp -a "$XAPPS_DIST/." "$TARGET/"
+        N_XAPPS=0
+        for t in feh xfiles xfilesctl xfilesthumb; do
+            if [[ -x "$TARGET/usr/bin/$t" ]]; then
+                N_XAPPS=$((N_XAPPS + 1))
+            else
+                warn "xapps-dist/usr/bin/$t missing"
+            fi
+        done
+        substep "x11 apps: $N_XAPPS/4 staged (feh xfiles xfilesctl xfilesthumb)"
+        # Imlib2's loaders are dlopen'd by name, so nothing checks their
+        # presence. A tree with libImlib2 and no loaders beside it decodes
+        # nothing and reports it as "unsupported format" rather than as the
+        # missing module it is, so assert them here instead.
+        N_LOADERS="$(find "$TARGET/usr/lib64/imlib2/loaders" -name '*.so' 2>/dev/null | wc -l)"
+        if [[ "$N_LOADERS" -eq 0 ]]; then
+            fail "no Imlib2 loaders staged - feh would load no image formats at all"
+        fi
+        substep "imlib2 loaders: $N_LOADERS staged"
+    else
+        warn "no xapps-dist/ - no feh, xfiles, xfilesctl or xfilesthumb"
+        echo "  (run build_xapps.sh; these ship with any desktop backend)"
+    fi
+fi
+
 # setting up x11 stuff if exist
-if [[ "$WITH_X11" == "1" ]]; then
+if [[ "$BACKEND" == "x11" ]]; then
     step "installing X11 stack from x11-dist/ ($(du -sh "$X11_DIST" | cut -f1))..."
     cp -a "$X11_DIST/." "$TARGET/"
     chmod 755 "$TARGET"/bin/* 2>/dev/null || true
@@ -251,7 +320,7 @@ if [[ "$WITH_X11" == "1" ]]; then
       fi
       substep "X11 installed (config: etc/fonts/fonts.conf, etc/X11/xorg.conf.{ms,fbdev}.base)"
 else
-    substep "text-only image (-x not given) - no Xorg, no i3, no mlterm"
+    substep "text-only image (no -x/-w) - no Xorg, no sway, no i3, no foot"
 fi
 
 # RLOS Atom and bwrap
