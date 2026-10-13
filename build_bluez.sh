@@ -12,11 +12,7 @@ STAGE="$ROOT/bluesz-stage"
 VER="5.87"
 URL="https://github.com/bluez/bluez/archive/refs/tags/${VER}.tar.gz"
 
-RED=$'\033[31m'; GRN=$'\033[32m'; YLW=$'\033[33m'; DIM=$'\033[2m'; RST=$'\033[0m'
-header() { printf '\n%s== %s ==%s\n' "$DIM" "$1" "$RST"; }
-info()  { printf '%s  %s%s\n' "$GRN" "$1" "$RST"; }
-warn()  { printf '%s  %s%s\n' "$YLW" "$1" "$RST"; }
-die()   { printf '%serror:%s %s\n' "$RED" "$RST" "$1" >&2; exit 1; }
+source "$ROOT/build-lib.sh"
 
 mkdir -p "$SRC"
 TARBALL="$SRC/bluez-${VER}.tar.gz"

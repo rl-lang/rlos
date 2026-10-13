@@ -54,15 +54,7 @@ CONFIG_SRC="$ROOT/kernel.config"
 GENERATED="$ROOT/rlos-atom/kernel.config"
 OUT="$ROOT/kernel-images/rlos-atom/bzImage"
 
-info() { echo "  $*"; }
-ok()   { echo "ok: $*"; }
-warn() { echo "warn: $*" >&2; }
-fail() { echo "FAIL: $*" >&2; exit 1; }
-header() {
-  echo
-  echo "== $* =="
-}
-
+source "$ROOT/build-lib.sh"
 # Symbols to remove. Each is a top-level "menu" symbol plus the drivers that
 # only exist to serve it.
 #

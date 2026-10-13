@@ -26,21 +26,13 @@ KERNEL="$ROOT/kernel-images/rlos-atom/bzImage"
 STAGE="isostage"
 OUT="rlos-atom.iso"
 
-info() { echo "  $*"; }
-ok()   { echo "ok: $*"; }
-warn() { echo "warn: $*" >&2; }
-fail() { echo "FAIL: $*" >&2; exit 1; }
-header() {
-  echo
-  echo "== $* =="
-}
-
+source "$ROOT/build-lib.sh"
 FORCE=0
 for a in "$@"; do
   case "$a" in
     --force) FORCE=1 ;;
     -h|--help)
-      sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '2,14p' "$HERE/mkiso.sh" | sed 's/^# \{0,1\}//'
       exit 0 ;;
     *) echo "mkiso.sh: unknown option '$a'" >&2; exit 1 ;;
   esac
@@ -139,7 +131,7 @@ EOF
 ok "grub.cfg"
 
 header "Building the ISO"
-grub-mkrescue -o "$OUT" "$STAGE" 2>&1 | grep -vE '^$' || true
+run_quiet grub-mkrescue -o "$OUT" "$STAGE"
 [ -f "$OUT" ] || fail "grub-mkrescue produced nothing"
 
 header "done"

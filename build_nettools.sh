@@ -35,21 +35,11 @@ cd "$ROOT"
 DIST="$ROOT/nettools-dist"
 GUEST_ETC="$DIST/etc"
 
-# Load the shared helpers (info/ok/warn/header/fail) if build_x11.sh defines
-# them; otherwise provide minimal stand-ins so this script runs standalone.
-if [ -f "$ROOT/.build-helpers.sh" ]; then
-  # shellcheck source=/dev/null
-  . "$ROOT/.build-helpers.sh"
-else
-  info() { echo "  $*"; }
-  ok()   { echo "ok: $*"; }
-  warn() { echo "warn: $*" >&2; }
-  fail() { echo "FAIL: $*" >&2; exit 1; }
-  header() {
-    echo
-    echo "== $* =="
-  }
-fi
+# The shared output vocabulary (header/step/substep/info/ok/warn/fail). This
+# used to be a conditional source of a $ROOT/.build-helpers.sh that never
+# existed, so the script always fell through to its own plain-echo stand-ins and
+# was the one build script whose output looked nothing like the rest.
+source "$ROOT/build-lib.sh"
 
 # ---------------------------------------------------------------------------
 # What to ship

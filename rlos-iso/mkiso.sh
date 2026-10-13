@@ -9,7 +9,10 @@
 set -euo pipefail
 
 # Always operate in this script's directory, wherever it is invoked from.
-cd "$(dirname "${BASH_SOURCE[0]}")"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$HERE"
+
+source "$HERE/../build-lib.sh"
 
 usage() {
     cat >&2 << EOF
@@ -50,37 +53,33 @@ OUT="rlos.iso"
 
 for tool in grub-mkrescue xorriso mcopy; do
     if ! command -v "$tool" > /dev/null 2>&1; then
-        echo "error: required tool '$tool' not found on PATH" >&2
-        echo "hint: emerge app-cdr/xorriso sys-fs/mtools, then retry" >&2
-        exit 1
+        fail "required tool '$tool' not found on PATH"
+        info  "hint: emerge app-cdr/xorriso sys-fs/mtools, then retry"
     fi
 done
 
 if [[ ! -f "$KERNEL" ]]; then
-    echo "error: $KERNEL not found - run ../compile_kernel.sh first" >&2
-    exit 1
+    fail "$KERNEL not found - run ../compile_kernel.sh first"
 fi
 
 # The initramfs is the whole system: the rootfs lives inside it, so X11 has to
 # be decided here or not at all. Rebuild it rather than trusting whatever the
 # last run left behind, otherwise "no -x" would silently inherit a desktop.
 if [[ "$REBUILD" == "1" ]]; then
-    echo "building initramfs (${X11_FLAG:-text-only})..."
+    step "building initramfs (${X11_FLAG:-text-only})..."
     "$BUILD_INITRAMFS" $X11_FLAG
 elif [[ ! -f "$INITRAMFS" ]]; then
-    echo "error: $INITRAMFS not found and --no-rebuild was given" >&2
-    echo "hint: drop --no-rebuild, or run ../rlos-initramfs/build_initramfs.sh" >&2
-    exit 1
+    fail "$INITRAMFS not found and --no-rebuild was given"
+    info  "hint: drop --no-rebuild, or run ../rlos-initramfs/build_initramfs.sh"
 else
-    echo "--no-rebuild: packing $INITRAMFS as-is, contents unverified"
+    warn "--no-rebuild: packing $INITRAMFS as-is, contents unverified"
 fi
 
 if [[ ! -f "$INITRAMFS" ]]; then
-    echo "error: $INITRAMFS not found - run ../rlos-initramfs/build_initramfs.sh first" >&2
-    exit 1
+    fail "$INITRAMFS not found - run ../rlos-initramfs/build_initramfs.sh first"
 fi
 
-echo "staging boot files..."
+step "staging boot files..."
 rm -rf "$STAGE"
 mkdir -p "$STAGE/boot/grub"
 cp "$KERNEL" "$STAGE/boot/bzImage"
@@ -178,22 +177,24 @@ menuentry "rlOS (fbtest)" {
 }
 EOF
 
-echo "creating $OUT (BIOS + UEFI hybrid)..."
-grub-mkrescue -o "$OUT" "$STAGE" 2>&1 | grep -v '^$' || true
+step "creating $OUT (BIOS + UEFI hybrid)..."
+# run_quiet, not a bare pipe: xorriso prints a dozen lines of drive/media/UPDATE
+# progress for an operation that either worked or did not. If it fails, run_quiet
+# shows the tail, which is where xorriso's actual diagnostic is.
+run_quiet grub-mkrescue -o "$OUT" "$STAGE"
 
 if [[ ! -f "$OUT" ]]; then
-    echo "error: build finished but $OUT is missing" >&2
-    exit 1
+    fail "build finished but $OUT is missing"
 fi
 
-echo "done: $OUT ($(du -h "$OUT" | cut -f1))"
+ok "$OUT ($(du -h "$OUT" | cut -f1))"
 if [[ "$WITH_X11" == "1" ]]; then
-    echo "      backend: X11 desktop (built with -x)"
+    info  "backend: X11 desktop (built with -x)"
 else
-    echo "      backend: text-only (no -x)"
+    info  "backend: text-only (no -x)"
 fi
 if [[ "$REBUILD" == "0" ]]; then
-    echo "      note: --no-rebuild, so this reflects initramfs.gz's previous contents"
+    warn  "--no-rebuild, so this reflects initramfs.gz's previous contents"
 fi
-echo "hint: write to USB with: sudo dd if=$OUT of=/dev/sdX bs=4M status=progress oflag=sync"
-echo "      (triple-check /dev/sdX first - dd to the wrong device destroys data)"
+info "write to USB with: sudo dd if=$OUT of=/dev/sdX bs=4M status=progress oflag=sync"
+warn "triple-check /dev/sdX first - dd to the wrong device destroys data"

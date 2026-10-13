@@ -8,11 +8,7 @@ cd "$SCRIPT_DIR"
 FF_SRC="${FF_SRC:-/usr/bin/fastfetch}"
 FF_DIST="$SCRIPT_DIR/fastfetch-dist"
 
-ok()   { printf "  [ OK ] %s\n" "$*"; }
-warn() { printf "  [WARN] %s\n" "$*" >&2; }
-fail() { printf "  [FAIL] %s\n" "$*" >&2; exit 1; }
-info() { printf "  :: %s\n" "$*"; }
-header() { printf "\n:: *\n:: %s\n" "$*"; }
+source "$SCRIPT_DIR/build-lib.sh"
 
 header "Host prerequisites"
 command -v fastfetch > /dev/null 2>&1 \

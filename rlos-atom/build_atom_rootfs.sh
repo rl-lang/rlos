@@ -46,15 +46,7 @@ BWRAP_DIST="$ROOT/rlos-atom/bwrap-dist"
 ATOM_BINS="$ROOT/rl-bins/rlos-atom"
 ATOM_INIT="$ROOT/rlos-atom/atom-init"
 
-info() { echo "  $*"; }
-ok()   { echo "ok: $*"; }
-warn() { echo "warn: $*" >&2; }
-fail() { echo "FAIL: $*" >&2; exit 1; }
-header() {
-  echo
-  echo "== $* =="
-}
-
+source "$ROOT/build-lib.sh"
 # ---------------------------------------------------------------------------
 # Preconditions. Every one of these produces a silently broken atom otherwise.
 # ---------------------------------------------------------------------------

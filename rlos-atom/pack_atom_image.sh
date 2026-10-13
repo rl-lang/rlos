@@ -38,13 +38,7 @@ cd "$ROOT"
 SRC="${1:-$ROOT/rlos-atom/atom-rootfs}"
 OUT="${2:-$ROOT/rlos-atom/atom-rootfs.tar.gz}"
 
-info() { echo "  $*"; }
-ok()   { echo "ok: $*"; }
-fail() { echo "FAIL: $*" >&2; exit 1; }
-header() {
-  echo
-  echo "== $* =="
-}
+source "$ROOT/build-lib.sh"
 
 SCRATCH="$(mktemp -d)"
 trap 'rm -rf "$SCRATCH"' EXIT
@@ -61,11 +55,16 @@ mkdir -p "$(dirname "$OUT")"
 # --format=gnu is safe here because the longest path in the tree is 75
 # characters, under gnu's 100-character name limit; it also avoids pax headers
 # recording atime/ctime, which would defeat the reproducibility.
+step "$(find "$SRC" -type f | wc -l) files -> $(du -sh "$SRC" | cut -f1) source"
+substep "gzip -9n is the slow part and prints nothing until it finishes"
+info "several minutes on a tree this size - this is not hung"
+watch_growth "$OUT" "$(basename "$OUT")" & WATCH=$!
 tar --format=gnu \
     --sort=name \
     --mtime='@0' \
     --owner=0 --group=0 --numeric-owner \
     -cf - -C "$SRC" . | gzip -9n > "$OUT"
+kill "$WATCH" 2> /dev/null; wait "$WATCH" 2> /dev/null || true
 ok "$(basename "$OUT"): $(du -h "$OUT" | cut -f1) (from $(du -sh "$SRC" | cut -f1))"
 
 header "Extracting for verification"

@@ -38,5 +38,5 @@ qemu-system-x86_64 \
     -vga none \
     -nographic \
     -serial mon:stdio \
-    -m 512 \
+    -m 2048 \
     "${ACCEL_ARGS[@]}"

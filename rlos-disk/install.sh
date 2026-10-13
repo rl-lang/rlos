@@ -15,6 +15,7 @@ set -euo pipefail
 # BASH_SOURCE (./rlos-disk/install.sh, the form README documents) no longer
 # resolves from the new directory and the cd fails.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/../build-lib.sh"
 cd "$SCRIPT_DIR"
 
 OUT="disk.img"
@@ -43,21 +44,18 @@ done
 
 for tool in losetup grub-install; do
     if ! command -v "$tool" > /dev/null 2>&1; then
-        echo "error: required binary '$tool' not found on PATH" >&2
-        exit 1
+        fail "required binary '$tool' not found on PATH"
     fi
 done
 
 if [[ ! -f "$OUT" ]]; then
-    echo "error: $OUT not found - run ./mkdisk.sh first" >&2
-    exit 1
+    fail "$OUT not found - run ./mkdisk.sh first"
 fi
 if [[ ! -f "$KERNEL" ]]; then
-    echo "error: $KERNEL not found - run ../compile_kernel.sh first" >&2
-    exit 1
+    fail "$KERNEL not found - run ../compile_kernel.sh first"
 fi
 
-echo "assembling fresh rootfs (${WITH_X11:-text-only})..."
+step "assembling fresh rootfs (${WITH_X11:-text-only})..."
 "$SCRIPT_DIR/../assemble-rootfs.sh" $WITH_X11 "$WORK"
 
 LOOP="$(sudo losetup --show -fP "$OUT")"
@@ -69,10 +67,10 @@ sudo mount "${LOOP}p2" "$MNT"
 # shellcheck disable=SC2064
 trap "sudo umount '$MNT' 2>/dev/null || true; sudo losetup -d '$LOOP'; rmdir '$MNT'" EXIT
 
-echo "copying rootfs..."
+step "copying rootfs..."
 sudo cp -a "$WORK"/. "$MNT"/
 
-echo "installing kernel + grub config..."
+step "installing kernel + grub config..."
 sudo mkdir -p "$MNT/boot/grub"
 sudo cp "$KERNEL" "$MNT/boot/bzImage"
 # NOTE: root=LABEL= does NOT work here - label resolution needs userspace
@@ -80,8 +78,7 @@ sudo cp "$KERNEL" "$MNT/boot/bzImage"
 # the kernel itself, so bake the partition's GPT UUID into grub.cfg.
 PARTUUID="$(sudo blkid -s PARTUUID -o value "${LOOP}p2")"
 if [[ -z "$PARTUUID" ]]; then
-    echo "error: could not read PARTUUID of ${LOOP}p2" >&2
-    exit 1
+    fail "could not read PARTUUID of ${LOOP}p2"
 fi
 echo "root partition PARTUUID: $PARTUUID"
 sudo tee "$MNT/boot/grub/grub.cfg" > /dev/null << EOF
@@ -114,7 +111,7 @@ menuentry "rlOS (debug)" {
 }
 EOF
 
-echo "installing GRUB bootloader onto $LOOP..."
+step "installing GRUB bootloader onto $LOOP..."
 sudo grub-install --target=i386-pc --modules="part_gpt ext2" \
     --boot-directory="$MNT/boot" "$LOOP"
 
@@ -123,7 +120,7 @@ rmdir "$MNT"
 sudo losetup -d "$LOOP"
 trap - EXIT
 
-echo "done: $OUT ready - boot with ./run_qemu.sh"
+ok "$OUT ready - boot with ./run_qemu.sh"
 if [[ -n "$WITH_X11" ]]; then
     echo "      backend: X11 desktop (built with -x)"
 else

@@ -45,6 +45,7 @@ set -euo pipefail
 # SCRIPT_DIR has to be made absolute before the cd below, otherwise
 # dirname of a relative $0 stops resolving once we have moved.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/../build-lib.sh"
 cd "$SCRIPT_DIR"
 
 DEVICE=""
@@ -95,8 +96,6 @@ ESP_SIZE=512M
 # to carry one of these names is still protected. Extend this on a new host.
 REFUSE_DISKS=(/dev/sda)
 
-die() { echo "error: $*" >&2; exit 1; }
-info() { echo "==> $*"; }
 
 if [[ $EUID -ne 0 ]]; then
     echo "usage: sudo $0 /dev/sdX [--size SIZE] [-x|--x11]" >&2
@@ -598,7 +597,7 @@ trap - EXIT
 sync
 
 echo
-echo "done: $DEVICE is now a bootable, persistent rlOS stick"
+ok "$DEVICE is now a bootable, persistent rlOS stick"
 echo
 echo "  root=PARTUUID=$ROOT_PARTUUID (verified against the disk after writing)"
 echo "  boot from it in your firmware's boot menu (F12/Esc/F1 at power on)"

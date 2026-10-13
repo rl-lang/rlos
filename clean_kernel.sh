@@ -36,13 +36,7 @@ for a in "$@"; do
   esac
 done
 
-info() { echo "  $*"; }
-ok()   { echo "ok: $*"; }
-warn() { echo "warn: $*" >&2; }
-header() {
-  echo
-  echo "== $* =="
-}
+source "$ROOT/build-lib.sh"
 
 SHARED_TREE="$ROOT/linux"
 

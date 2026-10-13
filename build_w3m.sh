@@ -78,11 +78,7 @@ W3M_URL="https://github.com/tats/w3m/archive/refs/tags/${W3M_TAG}.tar.gz"
 GC_VER="8.2.12"
 GC_URL="https://github.com/ivmai/bdwgc/archive/refs/tags/v${GC_VER}.tar.gz"
 
-RED=$'\033[31m'; GRN=$'\033[32m'; YLW=$'\033[33m'; DIM=$'\033[2m'; RST=$'\033[0m'
-header() { printf '\n%s== %s ==%s\n' "$DIM" "$1" "$RST"; }
-info()  { printf '%s  %s%s\n' "$GRN" "$1" "$RST"; }
-warn()  { printf '%s  %s%s\n' "$YLW" "$1" "$RST"; }
-die()   { printf '%serror:%s %s\n' "$RED" "$RST" "$1" >&2; exit 1; }
+source "$ROOT/build-lib.sh"
 
 # fetch <url> <out> [pin-key] - download unless cached, then verify.
 # With a pin-key the file is checked against pins.lock whether cached or fresh,

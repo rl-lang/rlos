@@ -51,11 +51,7 @@ IWD_URL="https://deb.debian.org/debian/pool/main/i/iwd/iwd_${IWD_VER}.orig.tar.x
 NL_VER="3.12.0"
 NL_URL="https://deb.debian.org/debian/pool/main/libn/libnl3/libnl3_${NL_VER}.orig.tar.gz"
 
-RED=$'\033[31m'; GRN=$'\033[32m'; YLW=$'\033[33m'; DIM=$'\033[2m'; RST=$'\033[0m'
-header() { printf '\n%s== %s ==%s\n' "$DIM" "$1" "$RST"; }
-info()  { printf '%s  %s%s\n' "$GRN" "$1" "$RST"; }
-warn()  { printf '%s  %s%s\n' "$YLW" "$1" "$RST"; }
-die()   { printf '%serror:%s %s\n' "$RED" "$RST" "$1" >&2; exit 1; }
+source "$ROOT/build-lib.sh"
 
 # fetch <url> <out> [pin-key] - download unless cached, then verify.
 # With a pin-key the file is checked against pins.lock whether it was just

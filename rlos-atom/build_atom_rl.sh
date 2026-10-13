@@ -40,15 +40,7 @@ cd "$ROOT"
 RL_LANG_DIR="${RL_LANG_DIR:-$ROOT/rl-lang}"
 OUT_DIR="$ROOT/rl-bins/rlos-atom"
 
-info() { echo "  $*"; }
-ok()   { echo "ok: $*"; }
-warn() { echo "warn: $*" >&2; }
-fail() { echo "FAIL: $*" >&2; exit 1; }
-header() {
-  echo
-  echo "== $* =="
-}
-
+source "$ROOT/build-lib.sh"
 usage() {
   cat << 'USAGE'
 Build the rlos-atom rl-lang toolchain (no-media: no audio, no GUI).

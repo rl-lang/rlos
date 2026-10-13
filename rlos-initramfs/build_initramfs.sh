@@ -9,6 +9,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/../build-lib.sh"
 # Always operate in this script's directory, wherever it is invoked from.
 cd "$SCRIPT_DIR"
 STAGE="initramfs"
@@ -28,22 +29,23 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         -x|--x11) WITH_X11="-x"; shift ;;
         -h|--help) usage; exit 0 ;;
-        *) echo "error: unknown argument '$1'" >&2; usage; exit 1 ;;
+        *) echo "unknown argument '$1'" >&2; usage; exit 1 ;;
     esac
 done
 
 if ! command -v cpio > /dev/null 2>&1; then
-    echo "error: required binary 'cpio' not found on PATH" >&2
-    exit 1
+    fail "required binary 'cpio' not found on PATH"
 fi
 if ! command -v gzip > /dev/null 2>&1; then
-    echo "error: required binary 'gzip' not found on PATH" >&2
-    exit 1
+    fail "required binary 'gzip' not found on PATH"
 fi
 
 "$SCRIPT_DIR/../assemble-rootfs.sh" $WITH_X11 "$STAGE"
 
-echo "packing $OUT (cpio newc + gzip -9)..."
+header "Pack"
+step "packing $OUT (cpio newc + gzip -9)..."
+watch_growth "$OUT" "$OUT" & WATCH=$!
 ( cd "$STAGE" && find . -mindepth 1 -print0 | LC_ALL=C sort -z | cpio -o -H newc --null 2> /dev/null | gzip -9 ) > "$OUT"
+kill "$WATCH" 2> /dev/null; wait "$WATCH" 2> /dev/null || true
 
-echo "done: $OUT ($(du -h "$OUT" | cut -f1))"
+ok "$OUT ($(du -h "$OUT" | cut -f1))"

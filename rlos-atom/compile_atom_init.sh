@@ -42,15 +42,7 @@ cd "$ROOT"
 SRC="$ROOT/rlos-initramfs/init.c"
 OUT="$ROOT/rlos-atom/atom-init"
 
-info() { echo "  $*"; }
-ok()   { echo "ok: $*"; }
-warn() { echo "warn: $*" >&2; }
-fail() { echo "FAIL: $*" >&2; exit 1; }
-header() {
-  echo
-  echo "== $* =="
-}
-
+source "$ROOT/build-lib.sh"
 [ -f "$SRC" ] || fail "init.c not found at $SRC"
 
 # Same flags compile_init.sh uses, so the two builds cannot drift by accident,

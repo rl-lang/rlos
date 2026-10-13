@@ -7,27 +7,29 @@ KERNEL_REPO="https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git"
 CONFIG_SRC="$SCRIPT_DIR/kernel.config"
 OUT_BZIMAGE="$SCRIPT_DIR/kernel-images/rlos/bzImage"
 
+source "$SCRIPT_DIR/build-lib.sh"
+
 # Clean build by default.
 # Set RLOS_NO_CLEAN=1 for an incremental build when iterating on C code with no
 # config change.
+header "Build mode"
 if [[ "${RLOS_NO_CLEAN:-0}" == "1" ]]; then
-    echo "RLOS_NO_CLEAN=1: incremental build (only safe when kernel.config is unchanged)"
+    info "RLOS_NO_CLEAN=1: incremental build (only safe when kernel.config is unchanged)"
 else
-    echo "forcing a clean build so a Kconfig change cannot be silently ignored..."
+    info "forcing a clean build so a Kconfig change cannot be silently ignored..."
 fi
 
+header "Kernel source"
 if [[ ! -f "$CONFIG_SRC" ]]; then
-    echo "error: $CONFIG_SRC not found" >&2
-    exit 1
+    fail "$CONFIG_SRC not found"
 fi
 
 if [[ -d "$KERNEL_DIR" ]]; then
-    echo "kernel source already present at ./$KERNEL_DIR, skipping clone"
+    step "source already present at ./$KERNEL_DIR, skipping clone"
 else
-    echo "cloning kernel source..."
+    step "cloning kernel source..."
     if ! git clone --depth 1 "$KERNEL_REPO" "$KERNEL_DIR"; then
-        echo "error: kernel clone failed" >&2
-        exit 1
+        fail "kernel clone failed"
     fi
 fi
 
@@ -38,15 +40,13 @@ pushd "$KERNEL_DIR" > /dev/null
 # Must happen before olddefconfig, so the .config that is generated is the one
 # the build actually uses.
 if [[ "${RLOS_NO_CLEAN:-0}" != "1" ]]; then
-    echo "make clean..."
+    step "make clean..."
     make clean > /dev/null
 fi
 
-echo "resolving config against current kernel version..."
+step "resolving config against current kernel version..."
 if ! make olddefconfig; then
-    echo "error: make olddefconfig failed" >&2
-    popd > /dev/null
-    exit 1
+    fail "make olddefconfig failed"
 fi
 
 # olddefconfig drops any option whose dependencies it cannot satisfy and
@@ -121,7 +121,7 @@ for sym in "${REQUIRED_SYMS[@]}"; do
     grep -qx "CONFIG_${sym}=y" .config || MISSING+=("$sym")
 done
 if [ ${#MISSING[@]} -ne 0 ]; then
-    echo "error: these framebuffer/console/sound symbols did not survive olddefconfig:" >&2
+    errmsg "these framebuffer/console/sound symbols did not survive olddefconfig:"
     for sym in "${MISSING[@]}"; do
         echo "  - $sym" >&2
     done
@@ -131,32 +131,30 @@ if [ ${#MISSING[@]} -ne 0 ]; then
     popd > /dev/null
     exit 1
 fi
-echo "framebuffer/console/sound config verified (${#REQUIRED_SYMS[@]} symbols)"
+ok "framebuffer/console/sound config verified (${#REQUIRED_SYMS[@]} symbols)"
 
-echo "building kernel (this can take a while)..."
+header "Building"
+step "make -j$(nproc) (this can take a while)..."
 if ! make -j"$(nproc)"; then
-    echo "error: kernel build failed" >&2
-    popd > /dev/null
-    exit 1
+    fail "kernel build failed"
 fi
 
 popd > /dev/null
 
 BUILT_IMAGE="$KERNEL_DIR/arch/x86/boot/bzImage"
 if [[ ! -f "$BUILT_IMAGE" ]]; then
-    echo "error: build finished but $BUILT_IMAGE not found" >&2
-    exit 1
+    fail "build finished but $BUILT_IMAGE not found"
 fi
 
 # Verify the LINKED kernel actually contains the driver.
 if [[ ! -f "$KERNEL_DIR/vmlinux" ]]; then
-    echo "error: $KERNEL_DIR/vmlinux not found after a successful build." >&2
+    errmsg "$KERNEL_DIR/vmlinux not found after a successful build."
     echo "  Without it the USB drivers cannot be verified, and a kernel that" >&2
     echo "  silently lost them boots to a VFS panic on real hardware." >&2
     exit 1
 fi
 if ! command -v nm > /dev/null 2>&1; then
-    echo "error: nm not found - cannot verify the built kernel contains the USB" >&2
+    errmsg "nm not found - cannot verify the built kernel contains the USB"
     echo "  PCI transport drivers. Install binutils, or the check is skipped and" >&2
     echo "  a broken kernel ships silently." >&2
     exit 1
@@ -164,7 +162,7 @@ fi
 
 SYMS="$(nm "$KERNEL_DIR/vmlinux" 2>/dev/null || true)"
 if [[ -z "$SYMS" ]]; then
-    echo "error: nm produced no output for $KERNEL_DIR/vmlinux." >&2
+    errmsg "nm produced no output for $KERNEL_DIR/vmlinux."
     echo "  The USB drivers cannot be verified, so refusing to ship the image." >&2
     exit 1
 fi
@@ -174,7 +172,7 @@ for drv in xhci_pci_driver ehci_pci_driver ohci_pci_driver; do
     grep -qE "[[:space:]]${drv}\$" <<< "$SYMS" || missing_drivers+=("$drv")
 done
 if [ ${#missing_drivers[@]} -ne 0 ]; then
-    echo "error: built kernel is missing USB PCI transport drivers:" >&2
+    errmsg "built kernel is missing USB PCI transport drivers:"
     for drv in "${missing_drivers[@]}"; do
         echo "  - $drv" >&2
     done
@@ -188,8 +186,8 @@ if [ ${#missing_drivers[@]} -ne 0 ]; then
     echo "  panics with 'VFS: unable to mount root fs on unknown-block(0,0)'." >&2
     exit 1
 fi
-echo "USB PCI transports verified in vmlinux (xhci/ehci/ohci)"
+ok "USB PCI transports verified in vmlinux (xhci/ehci/ohci)"
 
 mkdir -p "$(dirname "$OUT_BZIMAGE")"
 cp "$BUILT_IMAGE" "$OUT_BZIMAGE"
-echo "done: $OUT_BZIMAGE"
+ok "done: $OUT_BZIMAGE"

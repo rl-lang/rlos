@@ -60,26 +60,7 @@ CLEAN=0
 JOBS=""
 REUSE=0
 
-# --- Colors ---
-if [ -t 1 ] && [ -t 2 ]; then
-  C_RESET=$'\e[0m'
-  C_BOLD=$'\e[1m'
-  C_DIM=$'\e[2m'
-  C_CYAN=$'\e[36m'
-  C_GREEN=$'\e[32m'
-  C_YELLOW=$'\e[33m'
-  C_RED=$'\e[31m'
-  C_MAGENTA=$'\e[35m'
-  C_BLUE=$'\e[34m'
-else
-  C_RESET="" C_BOLD="" C_DIM="" C_CYAN="" C_GREEN="" C_YELLOW="" C_RED="" C_MAGENTA="" C_BLUE=""
-fi
-
-info()  { printf "${C_DIM}  ::${C_RESET} %s\n" "$*"; }
-ok()    { printf "${C_GREEN}  [ OK ]${C_RESET} %s\n" "$*"; }
-fail()  { printf "${C_RED}  [FAIL]${C_RESET} %s\n" "$*"; }
-warn()  { printf "${C_YELLOW}  [WARN]${C_RESET} %s\n" "$*"; }
-header(){ printf "\n${C_BOLD}${C_CYAN}:: %s${C_RESET}\n" "*"; }
+source "$SCRIPT_DIR/build-lib.sh"
 
 # Sourced after the message helpers so pins_clone_hint can report through fail().
 # shellcheck source=pins.sh

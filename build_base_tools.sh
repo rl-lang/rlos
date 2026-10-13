@@ -59,7 +59,7 @@ while [ $# -gt 0 ]; do
     -j|--jobs)  JOBS="$2"; shift 2 ;;
     --clean)    CLEAN=1; shift ;;
     -h|--help)
-      sed -n '2,42p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '2,42p' "$SCRIPT_DIR/build_base_tools.sh" | sed 's/^# \{0,1\}//'
       exit 0 ;;
     *) echo "build_base_tools.sh: unknown option '$1'" >&2; exit 1 ;;
   esac
@@ -79,19 +79,7 @@ if [ "$CLEAN" = "1" ]; then
   echo "cleaned"
 fi
 
-# --- Colors ---
-if [ -t 1 ] && [ -t 2 ]; then
-  C_RESET=$'\e[0m'; C_BOLD=$'\e[1m'; C_DIM=$'\e[2m'; C_CYAN=$'\e[36m'
-  C_GREEN=$'\e[32m'; C_YELLOW=$'\e[33m'; C_RED=$'\e[31m'
-else
-  C_RESET=""; C_BOLD=""; C_DIM=""; C_CYAN=""; C_GREEN=""; C_YELLOW=""; C_RED=""
-fi
-
-info()  { printf "${C_DIM}  ::${C_RESET} %s\n" "$*"; }
-ok()    { printf "${C_GREEN}  [ OK ]${C_RESET} %s\n" "$*"; }
-fail()  { printf "${C_RED}  [FAIL]${C_RESET} %s\n" "$*"; }
-warn()  { printf "${C_YELLOW}  [WARN]${C_RESET} %s\n" "$*"; }
-header(){ printf "\n${C_BOLD}${C_CYAN}:: %s${C_RESET}\n" "*"; }
+source "$SCRIPT_DIR/build-lib.sh"
 
 source "$SCRIPT_DIR/pins.sh"
 
@@ -114,18 +102,6 @@ fetch() {
 
 # run_quiet <cmd...> - run quietly, but print the tail on failure. Without this
 # every `make ... > /dev/null` hides its own errors and you debug blind.
-run_quiet() {
-  local log
-  log="$(mktemp)"
-  if "$@" > "$log" 2>&1; then
-    rm -f "$log"
-    return 0
-  fi
-  fail "failed: $*"
-  tail -25 "$log" | sed 's/^/         /'
-  rm -f "$log"
-  return 1
-}
 
 # sudo: privilege escalation for the unprivileged `user` session, which is how
 # every VT shell and the desktop run. Four configure choices are forced by what
@@ -191,8 +167,12 @@ fi
 # sudo's tree is built in place (its Makefile is not comfortable out-of-tree),
 # into a throwaway copy so a re-run does not fight a previous configure.
 SUDO_BUILD="$BASE_SRC/sudo-build"
+step "preparing an in-place build tree"
+substep "source:   $BASE_SRC/sudo-${SUDO_VER}"
+substep "build in: $SUDO_BUILD"
 rm -rf "$SUDO_BUILD"
 cp -a "$BASE_SRC/sudo-${SUDO_VER}" "$SUDO_BUILD"
+step "configure + make"
 (
   cd "$SUDO_BUILD"
   run_quiet ./configure \
@@ -246,6 +226,7 @@ info "sudo linkage: $SUDO_LIBS"
 
 # ---------------------------------------------------------------------------
 header "ttyrec ${TTYREC_VER} (terminal session record/playback)"
+step "fetch + unpack"
 # This is Debian's packaging of OVH's fork, which unpacks as
 # ovh-ttyrec-1.1.7.1/ - not ttyrec-1.1.7.1/ - so --strip-components=1 is used to
 # get a stable path rather than hardcoding a name that tracks whoever last
@@ -271,6 +252,8 @@ TTYREC_SRC="$BASE_SRC/ttyrec"
 # from a positional argument, so passing it after --prefix does nothing
 # anyway). The consequence to design around is a DT_NEEDED on libzstd.so.1,
 # which gcc-dist already stages for the guest.
+step "configure + make"
+substep "NO_ZSTD is deliberately NOT set (see above: this fork does not link)"
 run_quiet "$TTYREC_SRC/configure" --prefix=/usr
 run_quiet make -C "$TTYREC_SRC" $JOBS_FLAG
 for t in ttyrec ttyplay; do
@@ -350,7 +333,7 @@ info "layout:"
 find "$BASE_DIST" -maxdepth 3 | sort | sed 's/^/         /'
 for b in sudo ttyrec ttyplay rlin rlperf; do
   p="$(find "$BASE_DIST" -type f -name "$b" -perm -u+x | head -1)"
-  info "$b linkage:"
+  substep "$b linkage:"
   ldd "$p" 2>/dev/null | awk '{print $1}' | grep '^lib' | sort -u \
     | sed 's/^/         /' || true
 done

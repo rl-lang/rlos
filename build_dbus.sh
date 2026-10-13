@@ -7,11 +7,7 @@ DIST="$ROOT/dbus-dist"
 ETC="$DIST/etc"
 CONF_DIR="$DIST/etc/dbus-1"
 
-RED=$'\033[31m'; GRN=$'\033[32m'; YLW=$'\033[33m'; DIM=$'\033[2m'; RST=$'\033[0m'
-header() { printf '\n%s== %s ==%s\n' "$DIM" "$1" "$RST"; }
-info()  { printf '%s  %s%s\n' "$GRN" "$1" "$RST"; }
-warn()  { printf '%s  %s%s\n' "$YLW" "$1" "$RST"; }
-die()   { printf '%serror:%s %s\n' "$RED" "$RST" "$1" >&2; exit 1; }
+source "$ROOT/build-lib.sh"
 
 rm -rf "$DIST"
 mkdir -p "$DIST/usr/bin" "$DIST/usr/lib64" "$DIST/usr/share/dbus-1/system-services" "$CONF_DIR" "$ETC"

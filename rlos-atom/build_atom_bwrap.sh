@@ -24,15 +24,7 @@ cd "$ROOT"
 
 DIST="$ROOT/rlos-atom/bwrap-dist"
 
-info() { echo "  $*"; }
-ok()   { echo "ok: $*"; }
-warn() { echo "warn: $*" >&2; }
-fail() { echo "FAIL: $*" >&2; exit 1; }
-header() {
-  echo
-  echo "== $* =="
-}
-
+source "$ROOT/build-lib.sh"
 header "clean"
 rm -rf "$DIST"
 mkdir -p "$DIST/bin" "$DIST/usr/bin" "$DIST/usr/lib64"

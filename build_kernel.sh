@@ -25,13 +25,7 @@ TARGET="rlos"
 DO_CLEAN=1
 JOBS="$(nproc 2>/dev/null || echo 4)"
 
-info() { echo "  $*"; }
-ok()   { echo "ok: $*"; }
-fail() { echo "FAIL: $*" >&2; exit 1; }
-header() {
-  echo
-  echo "== $* =="
-}
+source "$ROOT/build-lib.sh"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -39,7 +33,7 @@ while [ $# -gt 0 ]; do
     --no-clean)         DO_CLEAN=0 ;;
     -j|--jobs)          JOBS="$2"; shift ;;
     -h|--help)
-      sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '2,13p' "$ROOT/build_kernel.sh" | sed 's/^# \{0,1\}//'
       exit 0 ;;
     *) echo "build_kernel.sh: unknown argument '$1'" >&2; exit 1 ;;
   esac

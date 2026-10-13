@@ -63,10 +63,10 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         -x|--x11) WITH_X11=1; shift ;;
         -h|--help) usage; exit 0 ;;
-        -*) echo "error: unknown option '$1'" >&2; usage; exit 1 ;;
+        -*) echo "unknown option '$1'" >&2; usage; exit 1 ;;
         *)
             if [[ -n "$TARGET" ]]; then
-                echo "error: too many arguments (already have '$TARGET')" >&2
+                errmsg "too many arguments (already have '$TARGET')"
                 usage
                 exit 1
             fi
@@ -79,71 +79,66 @@ if [[ -z "$TARGET" ]]; then
     exit 1
 fi
 
-# --- checking ---
+source "$SCRIPT_DIR/build-lib.sh"
+
+header "Checking prerequisites"
+
 # base-dist/ (sudo, ttyrec, rlin, rlperf) is NOT gated on -x: those are not
 # desktop tools and the text console needs them too.
 if [[ "$WITH_X11" == "1" && ! -d "$X11_DIST/bin" ]]; then
-    echo "error: -x was given but $X11_DIST/bin does not exist" >&2
+    errmsg "-x was given but $X11_DIST/bin does not exist"
     echo "hint: run build_x11.sh first, or drop -x for a text-only image." >&2
     exit 1
 fi
 
 # Init
 if [[ ! -x "$INIT_BIN" ]]; then
-    echo "error: $INIT_BIN not found - run rlos-initramfs/compile_init.sh first" >&2
-    exit 1
+    fail "$INIT_BIN not found - run rlos-initramfs/compile_init.sh first"
 fi
 
 # RL Toolchain
 for tool_bin in rl rlc rlt rldocs rlrepl rlsp; do
     if [[ ! -x "$RL_BINS/$tool_bin" ]]; then
-        echo "error: $RL_BINS/$tool_bin not found - run build_rl_bins.sh first" >&2
-        exit 1
+        fail "$RL_BINS/$tool_bin not found - run build_rl_bins.sh first"
     fi
 done
 
 # RL Programs
 for prog in "${RL_BIN_PROGRAMS[@]}"; do
     if [[ ! -f "$PROGRAMS/$prog.rl" ]]; then
-        echo "error: required program source code '$prog.rl' not found in '$PROGRAMS'" >&2
-        exit 1
+        fail "required program source code '$prog.rl' not found in '$PROGRAMS'"
     fi
 done
 if [[ ! -f "$PROGRAMS/nano/nano.rl" ]]; then
-    echo "error: required program source code 'nano/nano.rl' not found in '$PROGRAMS'" >&2
-    exit 1
+    fail "required program source code 'nano/nano.rl' not found in '$PROGRAMS'"
 fi
 
 # Git
 if [[ ! -x "$GIT_DIST/bin/git" ]]; then
-    echo "error: $GIT_DIST/bin/git not found - run build_git.sh first" >&2
-    exit 1
+    fail "$GIT_DIST/bin/git not found - run build_git.sh first"
 fi
 
 # GCC
 if [[ ! -x "$GCC_DIST/bin/gcc" ]]; then
-    echo "error: $GCC_DIST/bin/gcc not found - run build_gcc.sh first" >&2
-    exit 1
+    fail "$GCC_DIST/bin/gcc not found - run build_gcc.sh first"
 fi
 
 # Linker
 if [[ ! -x "$BINUTILS_DIST/bin/ld" ]]; then
-    echo "error: $BINUTILS_DIST/bin/ld not found - run build_binutils.sh first" >&2
-    exit 1
+    fail "$BINUTILS_DIST/bin/ld not found - run build_binutils.sh first"
 fi
 
 # BusyBox
 if [[ ! -x "$BB_DIST/bin/busybox" ]]; then
-    echo "error: $BB_DIST/bin/busybox not found - run build_busybox.sh first" >&2
-    exit 1
+    fail "$BB_DIST/bin/busybox not found - run build_busybox.sh first"
 fi
 if [[ ! -f "$BB_DIST/APPLYTS" ]]; then
-    echo "error: $BB_DIST/APPLYTS not found - run build_busybox.sh first" >&2
-    exit 1
+    fail "$BB_DIST/APPLYTS not found - run build_busybox.sh first"
 fi
 
+header "Target"
 # --- Setting up directory ---
-echo "assembling rootfs in $TARGET/..."
+step "assembling rootfs in $TARGET/..."
 rm -rf "$TARGET"
 mkdir -p "$TARGET"/{bin,sbin,dev,proc,sys,tmp,run,root,lib64,usr/lib,usr/lib64}
 mkdir -p "$TARGET/etc"
@@ -152,8 +147,7 @@ mkdir -p "$TARGET/etc"
 if command -v openssl > /dev/null 2>&1; then
     USER_PW_HASH="$(openssl passwd -6 -salt rlos root)"
 else
-    echo "error: openssl not found on PATH - cannot hash the 'user' password" >&2
-    exit 1
+    fail "openssl not found on PATH - cannot hash the 'user' password"
 fi
 printf 'root:x:0:0:root:/root:/bin/ash\n' > "$TARGET/etc/passwd"
 printf 'user:x:1000:1000:user:/home/user:/bin/ash\n' >> "$TARGET/etc/passwd"
@@ -187,7 +181,7 @@ OS_RELEASE_SRC="$SCRIPT_DIR/etc-rlos/os-release"
 if [[ -f "$OS_RELEASE_SRC" ]]; then
     install -m 0644 "$OS_RELEASE_SRC" "$TARGET/etc/os-release"
 else
-    echo "error: etc-rlos/os-release missing - fastfetch's os module would print" >&2
+    errmsg "etc-rlos/os-release missing - fastfetch's os module would print"
     echo "       nothing, and no tool can identify this OS" >&2
     exit 1
 fi
@@ -203,34 +197,35 @@ if [[ -d "$SCRIPT_SRC" ]]; then
         n=$((n + 1))
     done
     if [[ -f "$ATOM_IMAGE" ]]; then
-        echo "home/user/scripts: $n scripts (atom + ffmpeg)"
+        substep "home/user/scripts: $n scripts (atom + ffmpeg)"
     else
-        echo "home/user/scripts: $n scripts (WARNING: $ATOM_IMAGE not built, atom-*.sh will not run)"
+        substep "home/user/scripts: $n scripts (WARNING: $ATOM_IMAGE not built, atom-*.sh will not run)"
     fi
 fi
 
+header "Base tools and desktop"
 # Tools with no X11 dependency, staged into every image regardless of -x.
 # Separate from x11-dist/ so the -x flag cannot take sudo and ttyrec with it.
 if [[ -d "$BASE_DIST" ]]; then
-    echo "installing base tools from base-dist/ ($(du -sh "$BASE_DIST" | cut -f1))..."
+    step "installing base tools from base-dist/ ($(du -sh "$BASE_DIST" | cut -f1))..."
     cp -a "$BASE_DIST/." "$TARGET/"
     N_BASE=0
     for t in sudo ttyrec ttyplay rlin rlperf; do
         if [[ -x "$TARGET/usr/bin/$t" ]]; then
             N_BASE=$((N_BASE + 1))
         else
-            echo "warning: base-dist/usr/bin/$t missing" >&2
+            warn "base-dist/usr/bin/$t missing"
         fi
     done
-    echo "base tools: $N_BASE/5 staged (sudo ttyrec ttyplay rlin rlperf)"
+    substep "base tools: $N_BASE/5 staged (sudo ttyrec ttyplay rlin rlperf)"
 else
-    echo "no base-dist/ - no sudo, ttyrec, ttyplay, rlin or rlperf"
+    warn "no base-dist/ - no sudo, ttyrec, ttyplay, rlin or rlperf"
     echo "  (run build_base_tools.sh to add them; they are needed on the text console too)"
 fi
 
 # setting up x11 stuff if exist
 if [[ "$WITH_X11" == "1" ]]; then
-    echo "installing X11 stack from x11-dist/ ($(du -sh "$X11_DIST" | cut -f1))..."
+    step "installing X11 stack from x11-dist/ ($(du -sh "$X11_DIST" | cut -f1))..."
     cp -a "$X11_DIST/." "$TARGET/"
     chmod 755 "$TARGET"/bin/* 2>/dev/null || true
     mkdir -p "$TARGET/tmp/.X11-unix" "$TARGET/etc/fonts" "$TARGET/etc/X11"
@@ -238,48 +233,43 @@ if [[ "$WITH_X11" == "1" ]]; then
     cp -f "$TARGET/usr/share/rlos/fonts.conf" "$TARGET/etc/fonts/fonts.conf"
     for cfg in i3.config; do
         if [[ ! -f "$SCRIPT_DIR/etc-rlos/$cfg" ]]; then
-            echo "error: etc-rlos/$cfg missing" >&2
-            exit 1
+            fail "etc-rlos/$cfg missing"
         fi
         cp -f "$SCRIPT_DIR/etc-rlos/$cfg" "$TARGET/etc/$cfg"
     done
     for tmpl in ms fbdev; do
         if [[ ! -f "$TARGET/usr/share/rlos/xorg.conf.$tmpl.base" ]]; then
-            echo "error: xorg.conf.$tmpl.base missing from x11-dist - run build_x11.sh first" >&2
-            exit 1
+            fail "xorg.conf.$tmpl.base missing from x11-dist - run build_x11.sh first"
         fi
         cp -f "$TARGET/usr/share/rlos/xorg.conf.$tmpl.base" "$TARGET/etc/X11/xorg.conf.$tmpl.base"
     done
       if [[ -f "$SCRIPT_DIR/etc-rlos/rlos-clock" ]]; then
           install -m 0755 "$SCRIPT_DIR/etc-rlos/rlos-clock" "$TARGET/usr/bin/rlos-clock"
-          echo "usr/bin/rlos-clock (bar clock)"
+          substep "usr/bin/rlos-clock (bar clock)"
       else
-          echo "error: etc-rlos/rlos-clock missing - i3.config's status_command will fail" >&2
-          exit 1
+          fail "etc-rlos/rlos-clock missing - i3.config's status_command will fail"
       fi
-      echo "X11 installed (config: etc/fonts/fonts.conf, etc/X11/xorg.conf.{ms,fbdev}.base)"
+      substep "X11 installed (config: etc/fonts/fonts.conf, etc/X11/xorg.conf.{ms,fbdev}.base)"
 else
-    echo "text-only image (-x not given) - no Xorg, no i3, no mlterm"
+    substep "text-only image (-x not given) - no Xorg, no i3, no mlterm"
 fi
 
 # RLOS Atom and bwrap
 if [[ -f "$ATOM_IMAGE" && -d "$BWRAP_DIST" ]]; then
-    echo "installing rlos-atom ($(du -h "$ATOM_IMAGE" | cut -f1)) + bubblewrap..."
+    step "installing rlos-atom ($(du -h "$ATOM_IMAGE" | cut -f1)) + bubblewrap..."
     install -m 0644 "$ATOM_IMAGE" "$TARGET/atom-rootfs.tar.gz"
 
     cp -a "$BWRAP_DIST/." "$TARGET/"
     if [[ -x "$TARGET/bin/bwrap" ]]; then
-        echo "bwrap staged ($(du -h "$TARGET/bin/bwrap" | cut -f1))"
+        substep "bwrap staged ($(du -h "$TARGET/bin/bwrap" | cut -f1))"
     else
-        echo "error: bwrap not staged from bwrap-dist" >&2
-        exit 1
+        fail "bwrap not staged from bwrap-dist"
     fi
 
     if ! tar -tzf "$TARGET/atom-rootfs.tar.gz" >/dev/null 2>&1; then
-        echo "error: staged atom-rootfs.tar.gz is not a readable gzip archive" >&2
-        exit 1
+        fail "staged atom-rootfs.tar.gz is not a readable gzip archive"
     fi
-    echo "atom image verified as a readable gzip archive"
+    substep "atom image verified as a readable gzip archive"
 
     DOC_SRC="$SCRIPT_DIR/rlos-atom/docs"
     if [[ -d "$DOC_SRC" ]]; then
@@ -289,9 +279,9 @@ if [[ -f "$ATOM_IMAGE" && -d "$BWRAP_DIST" ]]; then
             "$TARGET/usr/share/doc/bwrap/README.md"
         install -m 0644 "$DOC_SRC/PROVENANCE.md" \
             "$TARGET/usr/share/doc/bwrap/PROVENANCE.md"
-        echo "bubblewrap docs: $(ls "$TARGET/usr/share/doc/bwrap" | wc -l) files"
+        substep "bubblewrap docs: $(ls "$TARGET/usr/share/doc/bwrap" | wc -l) files"
     else
-        echo "warning: rlos-atom/docs/ missing - shipping without bwrap documentation" >&2
+        warn "rlos-atom/docs/ missing - shipping without bwrap documentation"
     fi
 
     if [[ -f "$SCRIPT_DIR/rlos-atom/ATOM-BWRAP.md" ]]; then
@@ -300,18 +290,18 @@ if [[ -f "$ATOM_IMAGE" && -d "$BWRAP_DIST" ]]; then
             "$TARGET/usr/share/doc/ATOM-BWRAP.md"
         install -m 0644 "$SCRIPT_DIR/rlos-atom/ATOM-BWRAP.md" \
             "$TARGET/home/user/ATOM-BWRAP.md"
-        echo "guide: /usr/share/doc/ATOM-BWRAP.md, /home/user/ATOM-BWRAP.md"
+        substep "guide: /usr/share/doc/ATOM-BWRAP.md, /home/user/ATOM-BWRAP.md"
     fi
 
-    echo "atom: image staged; init.c enforces root ownership at boot"
+    substep "atom: image staged; init.c enforces root ownership at boot"
 else
-    echo "no rlos-atom/atom-rootfs.tar.gz - building without the atom container"
+    warn "no rlos-atom/atom-rootfs.tar.gz - building without the atom container"
     echo "  (run rlos-atom/build_atom_rootfs.sh, then pack_atom_image.sh,"
     echo "   then build_atom_bwrap.sh to include it)"
 fi
     # Fastfetch setup
     if [[ -d "$FF_DIST/usr/bin" ]]; then
-        echo "installing fastfetch from fastfetch-dist/ ($(du -sh "$FF_DIST" | cut -f1))..."
+        step "installing fastfetch from fastfetch-dist/ ($(du -sh "$FF_DIST" | cut -f1))..."
         cp -a "$FF_DIST/." "$TARGET/"
         chmod 755 "$TARGET/usr/bin/fastfetch"
         if [[ -f "$SCRIPT_DIR/ff_logo.txt" ]]; then
@@ -358,16 +348,17 @@ fi
   ]
 }
 FFCFG
-        echo "  logo: etc/xdg/fastfetch/fastfetch.jsonc -> usr/share/rlos/ff_logo.txt ($LOGO_LINES lines)"
+        substep "logo: etc/xdg/fastfetch/fastfetch.jsonc -> usr/share/rlos/ff_logo.txt ($LOGO_LINES lines)"
     else
-        echo "  no ff_logo.txt in the repo - fastfetch will use its built-in logo"
+        substep "no ff_logo.txt in the repo - fastfetch will use its built-in logo"
     fi
 else
-    echo "no fastfetch-dist/ - skipping fastfetch (run build_fastfetch.sh to add it)"
+    warn "no fastfetch-dist/ - skipping fastfetch (run build_fastfetch.sh to add it)"
 fi
 
+header "Init and toolchain"
 # symlink init
-echo "installing init (sbin/init + /init symlink)..."
+step "installing init (sbin/init + /init symlink)..."
 cp "$INIT_BIN" "$TARGET/sbin/init"
 chmod 755 "$TARGET/sbin/init"
 ln -sf sbin/init "$TARGET/init"
@@ -375,15 +366,15 @@ ln -sf sbin/init "$TARGET/init"
 # klogd
 KLOGD_BIN="$SCRIPT_DIR/rlos-initramfs/klogd"
 if [[ -x "$KLOGD_BIN" ]]; then
-    echo "installing klogd..."
+    step "installing klogd..."
     cp "$KLOGD_BIN" "$TARGET/sbin/klogd"
     chmod 755 "$TARGET/sbin/klogd"
 else
-    echo "warning: $KLOGD_BIN not found - run rlos-initramfs/compile_klogd.sh first (boot log stays uncolored)" >&2
+    warn "$KLOGD_BIN not found - run rlos-initramfs/compile_klogd.sh first (boot log stays uncolored)"
 fi
 
 # RL toolchain
-echo "installing toolchain (rl rlc rlt rldocs rlrepl rlsp)..."
+step "installing toolchain (rl rlc rlt rldocs rlrepl rlsp)..."
 for tool_bin in rl rlc rlt rldocs rlrepl rlsp; do
     cp "$RL_BINS/$tool_bin" "$TARGET/bin/"
 done
@@ -392,14 +383,15 @@ if [[ -x "$BB_DIST/bin/busybox" ]]; then
 fi
 
 # Git
-echo "installing git bundle..."
+header "Bundles"
+step "installing git bundle..."
 cp -a "$GIT_DIST/." "$TARGET/"
 
 # GCC
-echo "installing gcc bundle (C-only + LTO)..."
+step "installing gcc bundle (C-only + LTO)..."
 cp -a "$GCC_DIST/." "$TARGET/"
 
-echo "installing binutils bundle (as/ld - gcc has no built-in ones)..."
+step "installing binutils bundle (as/ld - gcc has no built-in ones)..."
 cp -a "$BINUTILS_DIST/." "$TARGET/"
 
 mkdir -p "$TARGET/usr/bin"
@@ -416,26 +408,23 @@ ln -sf gcc "$TARGET/usr/bin/cc"
 GCC_CC1="$(find "$TARGET/usr/libexec/gcc" -name cc1 -type f 2>/dev/null | head -1)"
 GCC_LTO1="$(find "$TARGET/usr/libexec/gcc" -name lto1 -type f 2>/dev/null | head -1)"
 if [[ ! -x "$TARGET/usr/bin/gcc" ]]; then
-    echo "error: gcc not staged at usr/bin/gcc (it must be at its configured prefix)" >&2
-    exit 1
+    fail "gcc not staged at usr/bin/gcc (it must be at its configured prefix)"
 fi
 if [[ ! -x "$GCC_CC1" ]]; then
-    echo "error: no cc1 under usr/libexec/gcc/ - every in-guest compile would fail" >&2
+    errmsg "no cc1 under usr/libexec/gcc/ - every in-guest compile would fail"
     echo "  with 'cannot execute cc1: posix_spawnp: No such file or directory'" >&2
     exit 1
 fi
 if [[ ! -x "$GCC_LTO1" ]]; then
-    echo "error: no lto1 under usr/libexec/gcc/ - 'rlt --compile --lto' would fail" >&2
-    exit 1
+    fail "no lto1 under usr/libexec/gcc/ - 'rlt --compile --lto' would fail"
 fi
 if [[ "$(readlink -f "$TARGET/usr/bin/cc")" != "$(readlink -f "$TARGET/usr/bin/gcc")" ]]; then
-    echo "error: usr/bin/cc does not resolve to usr/bin/gcc" >&2
-    exit 1
+    fail "usr/bin/cc does not resolve to usr/bin/gcc"
 fi
-echo "gcc at usr/bin/gcc, cc1 + lto1 present under usr/libexec/gcc (prefix contract OK)"
+substep "gcc at usr/bin/gcc, cc1 + lto1 present under usr/libexec/gcc (prefix contract OK)"
 
 # BusyBox
-echo "installing busybox bundle..."
+step "installing busybox bundle..."
 cp -a "$BB_DIST/." "$TARGET/"
 
 BB_EXCLUDE="sh cc git klogd ar strings"
@@ -469,21 +458,21 @@ while read -r applet; do
     fi
 done < "$BB_DIST/APPLYTS"
 if [ -n "$BB_SHADOW" ]; then
-    echo "error: busybox applets would shadow binaries staged in sbin:$BB_SHADOW" >&2
+    errmsg "busybox applets would shadow binaries staged in sbin:$BB_SHADOW"
     echo "hint: add them to BB_EXCLUDE with a note on why." >&2
     exit 1
 fi
-echo "busybox: $N_BB_LINKED applets linked, $N_BB_SKIPPED left to rl/git/gcc"
+substep "busybox: $N_BB_LINKED applets linked, $N_BB_SKIPPED left to rl/git/gcc"
 
 if [[ ! -x "$TARGET/bin/rescue" ]]; then
-    echo "error: $BB_DIST/bin/rescue missing or not executable" >&2
-    exit 1
+    fail "$BB_DIST/bin/rescue missing or not executable"
 fi
-echo "busybox: rescue shell staged (busybox ash, rlsh remains the default)"
+substep "busybox: rescue shell staged (busybox ash, rlsh remains the default)"
 
+header "Runtime libraries"
 # Needed Libraries
-echo "copying runtime library dependencies for everything staged..."
-echo "(preserving absolute paths + flat /usr/lib64, no ld.so.cache in guest)"
+step "copying runtime library dependencies for everything staged..."
+substep "(preserving absolute paths + flat /usr/lib64, no ld.so.cache in guest)"
 # base-dist's binaries are named explicitly rather than globbing
 # $TARGET/usr/bin/*, which also holds gcc, w3m, fastfetch and the nettools
 # binaries - widening the closure every time one of those dists changes. Their
@@ -495,7 +484,7 @@ DEPS="$(for tool_bin in "$TARGET"/bin/* "$TARGET"/usr/libexec/git-core/* \
     ldd "$tool_bin" 2>/dev/null | awk '{print $3}'
 done | grep '^/' | sort -u || true)"
 if [[ -z "$DEPS" ]]; then
-    echo "warning: no dynamic dependencies found (statically linked toolchain?)"
+    warn "no dynamic dependencies found (statically linked toolchain?)"
 else
     for lib in $DEPS; do
         if [[ -f "$lib" ]]; then
@@ -503,7 +492,7 @@ else
             cp -n "$lib" "$TARGET/$lib"
             cp -n "$lib" "$TARGET/usr/lib64/"
         else
-            echo "warning: dependency $lib listed by ldd but not found on disk" >&2
+            warn "dependency $lib listed by ldd but not found on disk"
         fi
     done
 fi
@@ -519,34 +508,33 @@ fi
   done < <(find "$TARGET/bin" "$TARGET/usr/bin" "$TARGET/sbin" \
                 "$TARGET/usr/sbin" -type f 2>/dev/null)
   if [[ -n "$LEAKED_ABS" ]]; then
-      echo "error: these staged binaries reference the build host's paths:$LEAKED_ABS" >&2
+      errmsg "these staged binaries reference the build host's paths:$LEAKED_ABS"
       echo "  A DT_NEEDED/RPATH/RUNPATH holding an absolute host path means the" >&2
       echo "  binary was staged from a build tree instead of an install tree." >&2
       echo "  Check: readelf -d <binary> | grep -E 'RPATH|RUNPATH|NEEDED'" >&2
       exit 1
   fi
-  echo "no staged binary references the build host"
+  ok "no staged binary references the build host"
 
 LD_LINUX="/lib64/ld-linux-x86-64.so.2"
 if [[ -f "$LD_LINUX" ]]; then
     cp "$LD_LINUX" "$TARGET/lib64/"
 else
-    echo "error: dynamic linker $LD_LINUX not found" >&2
-    exit 1
+    fail "dynamic linker $LD_LINUX not found"
 fi
 
 for rlt_lib in "m" "ffi" "curl" "argon2" "yaml" "pthread" "dl"; do
     if ! compgen -G "$TARGET/usr/lib64/lib${rlt_lib}.so*" > /dev/null \
        && ! compgen -G "$TARGET/usr/lib64/lib*${rlt_lib}*.so*" > /dev/null; then
-        echo "error: rlt can emit '-l$rlt_lib' but no matching library is in the guest." >&2
+        errmsg "rlt can emit '-l$rlt_lib' but no matching library is in the guest."
         echo "  Add it to build_gcc.sh's runtime-lib staging loop." >&2
         exit 1
     fi
 done
-echo "rlt link libraries present: m ffi curl argon2 yaml pthread dl"
+substep "rlt link libraries present: m ffi curl argon2 yaml pthread dl"
 
 # RLT symlinks
-echo "creating -l dev symlinks for rlt link libraries..."
+step "creating -l dev symlinks for rlt link libraries..."
 rlt_symlinked=""
 rlt_missing=""
 for rlt_lib in "ffi" "curl" "argon2" "yaml" "pthread" "dl"; do
@@ -560,23 +548,23 @@ for rlt_lib in "ffi" "curl" "argon2" "yaml" "pthread" "dl"; do
     rlt_symlinked="$rlt_symlinked lib$rlt_lib.so->$(basename "$rlt_target")"
 done
 if [[ -n "$rlt_missing" ]]; then
-    echo "error: no libNAME.so.N staged for:$rlt_missing" >&2
+    errmsg "no libNAME.so.N staged for:$rlt_missing"
     echo "  rlt emits -l for these and the linker cannot resolve them." >&2
     exit 1
 fi
-echo "dev symlinks:$rlt_symlinked"
+substep "dev symlinks:$rlt_symlinked"
 
 # RL Programs
-echo "installing rl-program sources..."
+step "installing rl-program sources..."
 mkdir -p "$TARGET/home/user/programs/rl"
 for prog in "${RL_BIN_PROGRAMS[@]}"; do
     cp "$PROGRAMS/$prog.rl" "$TARGET/home/user/programs/rl/$prog.rl"
 done
 cp "$PROGRAMS/nano/nano.rl" "$TARGET/home/user/programs/rl/nano.rl"
-echo "rl sources in /home/user/programs/rl"
+substep "rl sources in /home/user/programs/rl"
 
 # Scripts
-echo "staging udhcpc lease script..."
+step "staging udhcpc lease script..."
 mkdir -p "$TARGET/usr/share/udhcpc"
 cat > "$TARGET/usr/share/udhcpc/default.script" << 'UDSCRIPT'
 #!/bin/sh
@@ -611,7 +599,7 @@ esac
 exit 0
 UDSCRIPT
 chmod 755 "$TARGET/usr/share/udhcpc/default.script"
-echo "udhcpc lease script: usr/share/udhcpc/default.script"
+substep "udhcpc lease script: usr/share/udhcpc/default.script"
 
 if [[ -d "$SCRIPTS" ]]; then
     installed=()
@@ -623,13 +611,13 @@ if [[ -d "$SCRIPTS" ]]; then
         installed+=("${base%.sh}")
     done
     if (( ${#installed[@]} > 0 )); then
-        echo "scripts in /usr/bin: ${installed[*]}"
+        substep "scripts in /usr/bin: ${installed[*]}"
     fi
 fi
 
 # btop/curl/scp/sftp/sqlite3/ssh
 if [[ -d "$NETTOOLS_DIST" ]]; then
-    echo "installing network tools from nettools-dist/ ($(du -sh "$NETTOOLS_DIST" | cut -f1))..."
+    step "installing network tools from nettools-dist/ ($(du -sh "$NETTOOLS_DIST" | cut -f1))..."
     cp -a "$NETTOOLS_DIST/." "$TARGET/"
 
     ln -sf /usr/bin/lsblk "$TARGET/bin/lsblk"
@@ -661,13 +649,12 @@ if [[ -d "$NETTOOLS_DIST" ]]; then
     fi
 
     if [[ -f "$TARGET/etc/locale.conf" ]]; then
-        echo "locale: $(tr '\n' ' ' < "$TARGET/etc/locale.conf") (glibc built-in, no archive)"
+        substep "locale: $(tr '\n' ' ' < "$TARGET/etc/locale.conf") (glibc built-in, no archive)"
     else
-        echo "error: nettools-dist/etc/locale.conf missing" >&2
-        exit 1
+        fail "nettools-dist/etc/locale.conf missing"
     fi
 
-      echo "net tools installed (sshd_config: /etc/ssh/sshd_config, privsep uid 22 ready)"
+      substep "net tools installed (sshd_config: /etc/ssh/sshd_config, privsep uid 22 ready)"
 
       if [[ -f "$TARGET/usr/share/btop/themes/tokyo-night.theme" ]]; then
           mkdir -p "$TARGET/home/user/.config/btop"
@@ -675,21 +662,22 @@ if [[ -d "$NETTOOLS_DIST" ]]; then
 color_theme = "tokyo-night"
 theme_background = false
 BTOPCONF
-          echo "btop: tokyo-night theme selected"
+          substep "btop: tokyo-night theme selected"
       else
-          echo "btop: no tokyo-night.theme staged - btop keeps its built-in theme"
+          substep "btop: no tokyo-night.theme staged - btop keeps its built-in theme"
       fi
   else
-      echo "no nettools-dist/ - building without curl/ssh/sqlite3 (run build_nettools.sh)"
+      warn "no nettools-dist/ - building without curl/ssh/sqlite3 (run build_nettools.sh)"
   fi
 
+header "Optional components"
 # Dbus
 if [[ -d "$DBUS_DIST" ]]; then
-  echo "installing D-Bus from dbus-dist/ ($(du -sh "$DBUS_DIST" | cut -f1))..."
+  step "installing D-Bus from dbus-dist/ ($(du -sh "$DBUS_DIST" | cut -f1))..."
   cp -a "$DBUS_DIST/." "$TARGET/"
 
   if [[ -e "$TARGET/etc/machine-id" ]]; then
-    echo "error: $TARGET/etc/machine-id exists - it must be generated on first boot," >&2
+    errmsg "$TARGET/etc/machine-id exists - it must be generated on first boot,"
     echo "       never baked into an image (dbus-dist must not create it)" >&2
     exit 1
   fi
@@ -702,14 +690,14 @@ if [[ -d "$DBUS_DIST" ]]; then
       cp -f "$TARGET/usr/bin/$t" "$TARGET/bin/$t"
     fi
   done
-  echo "  D-Bus: system.conf staged, machine-id correctly absent"
+  substep "D-Bus: system.conf staged, machine-id correctly absent"
 else
-  echo "no dbus-dist/ - building without D-Bus (no wireless, no bluetooth)"
+  warn "no dbus-dist/ - building without D-Bus (no wireless, no bluetooth)"
 fi
 
 # Wireless (iwd)
 if [[ -d "$IWD_DIST" ]]; then
-  echo "installing iwd from iwd-dist/ ($(du -sh "$IWD_DIST" | cut -f1))..."
+  step "installing iwd from iwd-dist/ ($(du -sh "$IWD_DIST" | cut -f1))..."
   cp -a "$IWD_DIST/." "$TARGET/"
   for t in iwctl; do
     [ -f "$TARGET/usr/bin/$t" ] && cp -f "$TARGET/usr/bin/$t" "$TARGET/bin/$t"
@@ -717,44 +705,44 @@ if [[ -d "$IWD_DIST" ]]; then
   mkdir -p "$TARGET/var/lib/iwd"
   chmod 700 "$TARGET/var/lib/iwd"
   chmod 755 "$TARGET/usr/libexec/iwd" 2>/dev/null || true
-  echo "  wireless: iwd + iwctl staged, /var/lib/iwd ready (no credentials shipped)"
+  substep "wireless: iwd + iwctl staged, /var/lib/iwd ready (no credentials shipped)"
 else
-  echo "no iwd-dist/ - building without wireless"
+  warn "no iwd-dist/ - building without wireless"
 fi
 
 # Bluetooth
 if [[ -d "$BLUEZ_DIST" ]]; then
-  echo "installing BlueZ from bluesz-dist/ ($(du -sh "$BLUEZ_DIST" | cut -f1))..."
+  step "installing BlueZ from bluesz-dist/ ($(du -sh "$BLUEZ_DIST" | cut -f1))..."
   cp -a "$BLUEZ_DIST/." "$TARGET/"
   chmod 755 "$TARGET/usr/libexec/bluetooth/bluetoothd" 2>/dev/null || true
-  echo "  bluetooth: bluetoothd + bluetoothctl + btmon staged"
+  substep "bluetooth: bluetoothd + bluetoothctl + btmon staged"
 else
-  echo "no bluesz-dist/ - building without bluetooth"
+  warn "no bluesz-dist/ - building without bluetooth"
 fi
 
 # Firmware
 if [[ -d "$FW_DIST" ]]; then
-  echo "installing firmware from fw-dist/ ($(du -sh "$FW_DIST" | cut -f1))..."
+  step "installing firmware from fw-dist/ ($(du -sh "$FW_DIST" | cut -f1))..."
   cp -a "$FW_DIST/." "$TARGET/"
   chmod -R a+rX "$TARGET/lib/firmware"
-  echo "  firmware: $(find "$TARGET/lib/firmware" -type f | wc -l) blobs"
+  substep "firmware: $(find "$TARGET/lib/firmware" -type f | wc -l) blobs"
 else
-  echo "no fw-dist/ - wireless drivers will load but find no firmware"
+  warn "no fw-dist/ - wireless drivers will load but find no firmware"
 fi
 
 # W3M web browser
 if [[ -d "$W3M_DIST" ]]; then
-  echo "installing w3m from w3m-dist/ ($(du -sh "$W3M_DIST" | cut -f1))..."
+  step "installing w3m from w3m-dist/ ($(du -sh "$W3M_DIST" | cut -f1))..."
   cp -a "$W3M_DIST/." "$TARGET/"
   chmod 755 "$TARGET/usr/bin/w3m" 2>/dev/null || true
   chmod -R a+rX "$TARGET/usr/share/w3m" 2>/dev/null || true
   if [[ -e "$TARGET/usr/lib64/libtinfo.so.6" ]]; then
-    echo "  browser: w3m staged at /usr/bin/w3m, terminfo library present"
+    substep "browser: w3m staged at /usr/bin/w3m, terminfo library present"
   else
-    echo "  *** WARNING: libtinfo.so.6 missing - w3m will not start ***"
+    substep "*** WARNING: libtinfo.so.6 missing - w3m will not start ***"
   fi
 else
-  echo "no w3m-dist/ - building without a browser"
+  warn "no w3m-dist/ - building without a browser"
 fi
 
-echo "done: rootfs assembled in $TARGET/ ($(du -sh "$TARGET" | cut -f1))"
+ok "rootfs assembled in $TARGET/ ($(du -sh "$TARGET" | cut -f1))"

@@ -20,14 +20,14 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# For the colour variables and the section headings only. The per-item rows
+# below are an aligned table (%-24s columns), not prose, so they keep their own
+# printf rather than going through info/ok - running them through a prefixed
+# helper would destroy the column alignment.
+# shellcheck source=build-lib.sh
+source "$SCRIPT_DIR/build-lib.sh"
 # shellcheck source=pins.sh
 source "$SCRIPT_DIR/pins.sh"
-
-if [[ -t 1 ]]; then
-    RST=$'\033[0m'; RED=$'\033[31m'; GRN=$'\033[32m'; YLW=$'\033[33m'; DIM=$'\033[2m'
-else
-    RST=""; RED=""; GRN=""; YLW=""; DIM=""
-fi
 
 STRICT=0
 [[ "${1:-}" == "--strict" ]] && STRICT=1
@@ -43,7 +43,7 @@ fi
 OK=0; MISMATCH=0; NOTCACHED=0; DRIFT=0
 declare -a PROBLEMS=()
 
-printf "${DIM}== pins.lock ==${RST}\n"
+header "pins.lock"
 printf "  ${DIM}%s${RST}\n" "$PINS_LOCK"
 
 # ---------------------------------------------------------------------------
@@ -78,7 +78,7 @@ sha_of() {
     esac
 }
 
-printf "\n${DIM}== tarballs ==${RST}\n"
+header "tarballs"
 for key in $(cut -d= -f1 "$PINS_LOCK" | sed -n 's/^\([A-Za-z0-9._-]*\)\.url$/\1/p' | sort); do
     want="$(pins_get "${key}.sha256")"
     rel="$(sha_of "$key")" || { printf "  ${YLW}?${RST}    %-24s no known cache path\n" "$key"; continue; }
@@ -125,7 +125,7 @@ git_dir_of() {
     esac
 }
 
-printf "\n${DIM}== git checkouts ==${RST}\n"
+header "git checkouts"
 for key in $(cut -d= -f1 "$PINS_LOCK" | sed -n 's/^\([A-Za-z0-9._-]*\)\.repo$/\1/p' | sort); do
     want="$(pins_get "${key}.sha")"
     rel="$(git_dir_of "$key")" || continue
@@ -158,7 +158,7 @@ done
 # ---------------------------------------------------------------------------
 # summary
 # ---------------------------------------------------------------------------
-printf "\n${DIM}== summary ==${RST}\n"
+header "summary"
 printf "  %s%d ok%s" "$GRN" "$OK" "$RST"
 [[ "$NOTCACHED" -gt 0 ]] && printf ", %s%d not cached%s" "$DIM" "$NOTCACHED" "$RST"
 [[ "$DRIFT" -gt 0 ]] && printf ", %s%d drifted%s" "$RED" "$DRIFT" "$RST"

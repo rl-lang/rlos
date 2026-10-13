@@ -286,26 +286,7 @@ FONT_FILES=("JetBrainsMonoNerdFontMono-Regular.ttf" "JetBrainsMonoNerdFontMono-B
             "JetBrainsMonoNerdFontMono-Italic.ttf" "JetBrainsMonoNerdFontMono-BoldItalic.ttf")
 HOST_FONT_DIR="/usr/share/fonts/nerdfonts"
 
-# --- Colors ---
-if [ -t 1 ] && [ -t 2 ]; then
-  C_RESET=$'\e[0m'
-  C_BOLD=$'\e[1m'
-  C_DIM=$'\e[2m'
-  C_CYAN=$'\e[36m'
-  C_GREEN=$'\e[32m'
-  C_YELLOW=$'\e[33m'
-  C_RED=$'\e[31m'
-  C_MAGENTA=$'\e[35m'
-  C_BLUE=$'\e[34m'
-else
-  C_RESET="" C_BOLD="" C_DIM="" C_CYAN="" C_GREEN="" C_YELLOW="" C_RED="" C_MAGENTA="" C_BLUE=""
-fi
-
-info()  { printf "${C_DIM}  ::${C_RESET} %s\n" "$*"; }
-ok()    { printf "${C_GREEN}  [ OK ]${C_RESET} %s\n" "$*"; }
-fail()  { printf "${C_RED}  [FAIL]${C_RESET} %s\n" "$*"; }
-warn()  { printf "${C_YELLOW}  [WARN]${C_RESET} %s\n" "$*"; }
-header(){ printf "\n${C_BOLD}${C_CYAN}:: %s${C_RESET}\n" "*"; }
+source "$SCRIPT_DIR/build-lib.sh"
 
 # Sourced after the colour helpers so pins_verify can report failures through
 # fail() rather than raw stderr. See pins.lock for what is pinned and why.
@@ -414,18 +395,6 @@ fetch() {
 
 # run_quiet <cmd...> - run quietly, but print the tail on failure. Without this
 # every `make ... > /dev/null` hides its own errors and you debug blind.
-run_quiet() {
-  local log
-  log="$(mktemp)"
-  if "$@" > "$log" 2>&1; then
-    rm -f "$log"
-    return 0
-  fi
-  fail "failed: $*"
-  tail -25 "$log" | sed 's/^/         /'
-  rm -f "$log"
-  return 1
-}
 
 header "Xorg server ${XORG_SERVER_VER} (GLX/glamor/DRI off)"
 fetch "$XORG_SERVER_URL" "$X11_SRC/xorg-server-${XORG_SERVER_VER}.tar.xz" "xorg-server"
@@ -437,7 +406,7 @@ rm -rf "$XORG_BUILD"
 # prefix=/usr so the baked module path is /usr/lib/xorg/modules, which is
 # where we stage it - dlopen uses an absolute path so ld.so.cache is irrelevant.
 # Everything graphics-accelerated is off: no GLX, no glamor, no DRI1/2/3.
-info "meson setup (xorg only, no xvfb/xephyr/xnest, no GL)"
+step "meson setup (xorg only, no xvfb/xephyr/xnest, no GL)"
 # Option names verified against this release's meson_options.txt: SELinux is
 # `xselinux`, logind is `systemd_logind`. XvMC is off because it needs GLX.
 # udev AND udev_kms must both be off: config_odev_probe() calls
@@ -457,7 +426,10 @@ meson setup "$XORG_BUILD" "$X11_SRC/xorg-server-${XORG_SERVER_VER}" \
   -Dudev=false -Dudev_kms=false -Dxselinux=false \
   -Dsystemd_logind=false -Dlibunwind=false \
   -Dxkb_dir=/usr/share/X11/xkb > /dev/null
+step "ninja"
 run_quiet ninja -C "$XORG_BUILD" $JOBS_FLAG
+step "ninja install (into a DESTDIR staging tree)"
+substep "the server must exist before the fbdev DDX can be built against it"
 DESTDIR="$X11_SRC/xorg-pkg" run_quiet ninja -C "$XORG_BUILD" install
 ok "Xorg built"
 XORG_BIN="$X11_SRC/xorg-pkg/usr/bin/Xorg"

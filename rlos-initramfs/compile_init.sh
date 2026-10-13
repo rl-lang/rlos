@@ -2,19 +2,20 @@
 set -euo pipefail
 
 # Always operate in this script's directory, wherever it is invoked from.
-cd "$(dirname "${BASH_SOURCE[0]}")"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$HERE"
+
+source "$HERE/../build-lib.sh"
 
 SRC="init.c"
 OUT="init"
 
 if ! command -v gcc > /dev/null 2>&1; then
-  echo "error: gcc not found on PATH" >&2
-  exit 1
+  fail "gcc not found on PATH"
 fi
 
 if [[ ! -f "$SRC" ]]; then
-  echo "error: $SRC not found in current directory" >&2
-  exit 1
+  fail "$SRC not found in current directory"
 fi
 
 # Clear any stale $OUT before compiling. gcc follows a symlink when opening its
@@ -25,7 +26,7 @@ fi
 # was actually fine. rm -f covers both the symlink and a leftover directory.
 rm -f "$OUT"
 
-echo "compiling $SRC..."
+step "compiling $SRC..."
 # -march/-mtune are pinned deliberately and MUST NOT be left to the host
 # toolchain. Gentoo's gcc defaults to a recent -march, which emitted ~4300 AVX
 # instructions into this binary. init is PID 1 and runs before anything else, so
@@ -38,8 +39,7 @@ echo "compiling $SRC..."
 if ! gcc -static -march=x86-64 -mtune=generic -fno-pie -no-pie \
      -ffunction-sections -fdata-sections -Wl,--gc-sections \
      -Wall -Wextra -Wno-unused-parameter "$SRC" -o "$OUT"; then
-  echo "error: compilation failed" >&2
-  exit 1
+  fail "compilation failed"
 fi
 
 # -march controls the code gcc emits for init.c only. It cannot reach the AVX
@@ -56,8 +56,7 @@ if objdump -d "$OUT" | grep -qE '\bv(zeroall|zeroupper|mov[a-z]*|pxor|broadcast[
 fi
 
 if [[ ! -x "$OUT" ]]; then
-  echo "error: build finished but $OUT is missing or not executable" >&2
-  exit 1
+  fail "build finished but $OUT is missing or not executable"
 fi
 
-echo "done: $OUT"
+ok "$OUT"
