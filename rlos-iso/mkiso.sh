@@ -16,10 +16,12 @@ source "$HERE/../build-lib.sh"
 
 usage() {
     cat >&2 << EOF
-usage: mkiso.sh [-x|--x11] [--no-rebuild]
+usage: mkiso.sh [-x|--x11 | -w|--wayland] [-i|--installer] [--no-rebuild]
 
   -x, --x11       include the X11 desktop in the ISO. Without it the ISO is
                   text-only. Requires build_x11.sh to have been run.
+  -i, --installer include the in-guest installer (rlos-install + sfdisk +
+                  the filesystem tools and the GRUB boot artifacts).
   --no-rebuild    pack the existing rlos-initramfs/initramfs.gz as-is instead
                   of rebuilding it. For iterating on a hand-edited initramfs;
                   the ISO's contents are then whatever that file holds.
@@ -27,17 +29,21 @@ EOF
 }
 
 WITH_X11=0
+WITH_INSTALLER=0
 REBUILD=1
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -x|--x11) WITH_X11=1; shift ;;
+        -i|--installer) WITH_INSTALLER=1; shift ;;
         --no-rebuild) REBUILD=0; shift ;;
         -h|--help) usage; exit 0 ;;
-        *) echo "error: unknown argument '$1'" >&2; usage; exit 1 ;;
+        *) echo "unknown argument '$1'" >&2; usage; exit 1 ;;
     esac
 done
 X11_FLAG=""
 [[ "$WITH_X11" == "1" ]] && X11_FLAG="-x"
+INSTALLER_FLAG=""
+[[ "$WITH_INSTALLER" == "1" ]] && INSTALLER_FLAG="-i"
 
 # Prefer the vendored xorriso (built by ../build_xorriso.sh) when present -
 # Gentoo ships no xorriso ebuild, so the host one usually does not exist.
@@ -62,17 +68,100 @@ if [[ ! -f "$KERNEL" ]]; then
     fail "$KERNEL not found - run ../compile_kernel.sh first"
 fi
 
+# The GRUB boot artifacts the in-guest installer needs, staged into grub-dist/
+# BEFORE the initramfs is built, because that build is what copies them in.
+#
+# WHY THESE HAVE TO BE GENERATED RATHER THAN READ OFF THE ISO: grub-mkrescue
+# does not leave boot.img, core.img or the EFI loader as files on the image it
+# produces. It embeds them - the BIOS boot code in the System Area, the EFI
+# image as an El Torito entry - so an installer running inside a guest booted
+# from that ISO has nothing to copy. They are rebuilt here with the same
+# grub-mkimage that grub-install uses under the hood, which also means the
+# guest does not need grub-install itself (a much larger thing to ship).
+#
+# The module list is deliberately generous. A trimmed set builds a smaller
+# core.img and grubx64.efi, but the failure mode of trimming one module too few
+# is an image that installs cleanly and then boots to nothing, with nothing in
+# the installer's output to say why. mkusb.sh's --modules="part_gpt ext2" is the
+# floor that is known to work; this is that plus what the normal command and the
+# FAT driver need to read the ESP.
+gen_grub_artifacts() {
+    local out="$1" mod
+    for mod in grub-mkimage; do
+        command -v "$mod" > /dev/null 2>&1 \
+            || { fail "$mod not found - the installer needs it to stage a bootloader"; \
+                 fail "on Gentoo: emerge sys-boot/grub"; exit 1; }
+    done
+    rm -rf "$out"
+    mkdir -p "$out"
+
+    step "grub: BIOS core image"
+    # biosdisk is LOAD-BEARING and was missing here until a boot test caught it.
+    # It is the INT 13h driver - the only thing in this list that can read a disk
+    # at all. Without it the rest of the list is partition parsers, filesystems
+    # and a menu for a disk it cannot see, and the symptom is a bare "GRUB" with
+    # no menu: `set timeout=5` lives in grub.cfg, so a GRUB that cannot read the
+    # disk never gets far enough to show the countdown. ahci/ata are margin for
+    # disks that do not surface through plain INT 13h.
+    #
+    # Note there is no virtio module to add: GRUB's i386-pc build has no virtio
+    # support at all, and UEFI firmware generally cannot read virtio-blk either.
+    # That is why run_qemu.sh attaches the scratch disk as AHCI and not virtio.
+    grub-mkimage -O i386-pc -p '(hd0,msdos1)/boot/grub' \
+        -o "$out/core.img" biosdisk ahci ata part_gpt part_msdos ext2 fat normal linux \
+        || { fail "grub-mkimage -O i386-pc failed"; exit 1; }
+
+    step "grub: EFI loader (x86_64)"
+    grub-mkimage -O x86_64-efi -p /boot/grub \
+        -o "$out/grubx64.efi" part_gpt fat normal linux \
+        || { fail "grub-mkimage -O x86_64-efi failed"; exit 1; }
+
+    # boot.img is the 512-byte MBR stub that chains to core.img, and diskboot.img
+    # is its block-device variant. Both come from the host's GRUB installation
+    # rather than being generated: grub-mkimage does not produce them, they are
+    # shipped as part of the i386-pc platform directory, and there is no
+    # supported way to regenerate them.
+    step "grub: MBR boot stubs"
+    local src
+    for src in boot.img diskboot.img; do
+        local from
+        from="$(find /usr/lib/grub/i386-pc -maxdepth 1 -name "$src" 2>/dev/null | head -1)"
+        [[ -n "$from" ]] || { fail "$src not found under /usr/lib/grub/i386-pc"; \
+                              fail "the installer would install an MBR with no boot code"; exit 1; }
+        install -m 0644 "$from" "$out/$src"
+    done
+
+    # An EFI install also wants the 32-bit loader: some firmware only looks at
+    # BOOTIA32.EFI. mkusb.sh treats that one as optional, so it is too - but if
+    # the host has it, shipping it costs nothing and covers those machines.
+    local ia32
+    ia32="$(find /usr/lib/grub/i386-efi -maxdepth 2 -name 'grubia32.efi' 2>/dev/null | head -1 || true)"
+    [[ -n "$ia32" ]] && install -m 0644 "$ia32" "$out/grubia32.efi" \
+        && info "staged the 32-bit EFI loader too"
+
+    for f in core.img grubx64.efi boot.img diskboot.img; do
+        [[ -s "$out/$f" ]] || { fail "grub artifact $f is missing or empty"; exit 1; }
+    done
+    ok "grub-dist ready ($(du -sh "$out" | cut -f1))"
+}
+
+if [[ "$WITH_INSTALLER" == "1" ]]; then
+    header "Installer"
+    gen_grub_artifacts "../grub-dist"
+fi
+
 # The initramfs is the whole system: the rootfs lives inside it, so X11 has to
 # be decided here or not at all. Rebuild it rather than trusting whatever the
 # last run left behind, otherwise "no -x" would silently inherit a desktop.
 if [[ "$REBUILD" == "1" ]]; then
-    step "building initramfs (${X11_FLAG:-text-only})..."
-    "$BUILD_INITRAMFS" $X11_FLAG
+    step "building initramfs (${X11_FLAG:-text-only}${INSTALLER_FLAG:+, }${INSTALLER_FLAG:-})..."
+    "$BUILD_INITRAMFS" $X11_FLAG $INSTALLER_FLAG
 elif [[ ! -f "$INITRAMFS" ]]; then
     fail "$INITRAMFS not found and --no-rebuild was given"
     info  "hint: drop --no-rebuild, or run ../rlos-initramfs/build_initramfs.sh"
 else
     warn "--no-rebuild: packing $INITRAMFS as-is, contents unverified"
+    [[ "$WITH_INSTALLER" == "1" ]] && warn "--no-rebuild also skips regenerating grub-dist"
 fi
 
 if [[ ! -f "$INITRAMFS" ]]; then
@@ -192,6 +281,11 @@ if [[ "$WITH_X11" == "1" ]]; then
     info  "backend: X11 desktop (built with -x)"
 else
     info  "backend: text-only (no -x)"
+fi
+if [[ "$WITH_INSTALLER" == "1" ]]; then
+    info  "installer: yes - run ~/scripts/rlos-install.sh from the live session"
+else
+    info  "installer: no (rebuild with -i to install from the running system)"
 fi
 if [[ "$REBUILD" == "0" ]]; then
     warn  "--no-rebuild, so this reflects initramfs.gz's previous contents"

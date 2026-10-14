@@ -48,7 +48,23 @@ done
 JOBS_FLAG=""
 [ -n "$JOBS" ] && JOBS_FLAG="-j $JOBS"
 
-EXCLUDE_APPLETS="INIT TC"
+# INIT/TC are excluded because the rlOS init replaces them.
+#
+# MKE2FS/TUNE2FS are excluded because busybox versions of both are strictly
+# worse shadows of e2fsprogs, and the guest's PATH puts /bin BEFORE /usr/bin:
+#
+#     PATH=/bin:/usr/bin:/sbin:/usr/sbin      (init.c)
+#
+# e2fsprogs' mke2fs ships in /usr/bin via build_install_tools.sh, and busybox's
+# applet would land in /bin - so the applet wins, and `mke2fs -t ext4` fails
+# with "invalid option -- 't'". busybox's mke2fs can only ever create ext2: no
+# journal, no extents. That is not a degraded fallback, it is a different and
+# strictly less capable program that also shadows the real one.
+#
+# The cost is that an image built WITHOUT -i has no mke2fs or tune2fs at all.
+# Both were only ever used by the in-guest installer, so nothing in the shipped
+# system regresses; anyone who wants them gets the e2fsprogs versions.
+EXCLUDE_APPLETS="INIT TC MKE2FS TUNE2FS"
 
 header "Source"
 mkdir -p "$BB_SRC"

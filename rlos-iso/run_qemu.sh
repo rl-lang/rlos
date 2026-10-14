@@ -15,6 +15,26 @@ Boot the live ISO under QEMU (BIOS/SeaBIOS).
                            console path actually gets exercised
   ./run_qemu.sh --ssh      forward the guest's sshd to the host (see below)
 
+Flags can be combined.
+
+Installing to a disk, for testing rlos-install.sh:
+
+  ./run_qemu.sh --disk              attach a scratch disk; the guest sees /dev/sda
+  ./run_qemu.sh --disk disk2.img    ...of your choosing
+  ./run_qemu.sh --disk --boot-disk  boot from that disk instead of the ISO
+
+  Without this the guest has NO writable block device at all - just the CD - so
+  there is nothing for the installer to target and lsblk has nothing to list.
+
+  The scratch disk lives on the HOST filesystem, which is the entire point. A
+  loop device inside the guest cannot work: / is a tmpfs holding the unpacked
+  initramfs, so backing a 4G image with it would need more RAM than the system
+  occupies. Writing through it exhausts memory and the ext4 writeback fails with
+  EIO, leaving a corrupt filesystem that still looks fine to blkid.
+
+  The file is ERASED by rlos-install.sh. It is a scratch file, so that is
+  recoverable in a way that a real disk is not - but it is still data.
+
 Networking: the guest always gets a NIC (QEMU's implicit user-mode default),
 so it always DHCPs and sshd always starts. Without --ssh that sshd is
 unreachable, because user-mode networking has no inbound path from the host.
@@ -44,13 +64,26 @@ USAGE
 
 VIDEO=0
 SSH=0
-case "${1:-}" in
-    --video) VIDEO=1 ;;
-    --ssh) SSH=1 ;;
-    -h|--help) usage; exit 0 ;;
-    "") ;;
-    *) usage >&2; exit 1 ;;
-esac
+DISK=""
+DISK_GIVEN=0
+BOOT_DISK=0
+
+# A loop rather than a single `case "${1:-}"`: with one case statement only
+# $1 was ever examined, so `--video --ssh` silently ignored the ssh request.
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --video)      VIDEO=1; shift ;;
+        --ssh)        SSH=1; shift ;;
+        --disk)       DISK_GIVEN=1; shift
+                      # An optional value: the next argument is the filename if
+                      # it is not itself a flag, otherwise the default is used.
+                      if [[ $# -gt 0 && "$1" != -* ]]; then DISK="$1"; shift; fi ;;
+        --disk=*)     DISK_GIVEN=1; DISK="${1#--disk=}"; shift ;;
+        --boot-disk)  BOOT_DISK=1; shift ;;
+        -h|--help)    usage; exit 0 ;;
+        *)            usage >&2; exit 1 ;;
+    esac
+done
 
 ISO="rlos.iso"
 
@@ -122,11 +155,48 @@ EOF
     fi
 fi
 
+DISK_ARGS=()
+if [[ "$DISK_GIVEN" == "1" ]]; then
+    [[ -n "$DISK" ]] || DISK="install-test.img"
+
+    # Sparse: truncate reserves the size but allocates no blocks, so a 4G file
+    # costs nothing until the guest writes to it.
+    if [[ ! -f "$DISK" ]]; then
+        if [[ "$BOOT_DISK" == "1" ]]; then
+            echo "error: $DISK does not exist - create one first, or drop --boot-disk" >&2
+            exit 1
+        fi
+        truncate -s 4G "$DISK" || { echo "error: could not create $DISK" >&2; exit 1; }
+        echo "created $DISK ($(du -h "$DISK" | cut -f1) apparent, $(du -h --apparent-size=never "$DISK" 2>/dev/null | cut -f1 || echo sparse) allocated)"
+    fi
+
+    # Attach as a plain IDE disk, so the guest sees /dev/sda. NOT virtio, which was
+    # the first attempt and was wrong for a reason only a boot test reveals:
+    # GRUB's i386-pc build has no virtio module at all
+    # (`ls /usr/lib/grub/i386-pc | grep -c virtio` -> 0), and UEFI firmware
+    # generally cannot read virtio-blk either. A virtio scratch disk installs
+    # perfectly and then boots to a bare "GRUB" on both paths. SeaBIOS exposes
+    # this disk over INT 13h, which is what core.img's biosdisk module speaks.
+    #
+    # `if=ahci` is NOT a valid QEMU if= bus (it fails with "unsupported bus
+    # type"), and `if=ide` is deprecated in QEMU 10.x, so this spells the device
+    # out: if=none creates the backend, -device ide-hd plugs it into ide.0.
+    DISK_ARGS=(-drive "file=$DISK,format=raw,if=none,id=rlosdisk" \
+               -device "ide-hd,drive=rlosdisk,bus=ide.0")
+
+    cat >&2 << EOF
+--disk: $DISK attached as the guest's /dev/sda
+         inside the guest:  rlos-install.sh --disk /dev/sda --dry-run
+         (the installer will erase it)
+EOF
+fi
+
 qemu-system-x86_64 \
     -cdrom "$ISO" \
-    -boot d \
+    -boot "$([[ "$BOOT_DISK" == "1" ]] && echo c || echo d)" \
     "${VIDEO_ARGS[@]}" \
     -serial mon:stdio \
     -m 2048 \
+    "${DISK_ARGS[@]}" \
     "${NET_ARGS[@]}" \
     "${ACCEL_ARGS[@]}"
