@@ -74,6 +74,8 @@ sha_of() {
         w3m)                     echo "w3m-src/w3m-0.5.3-git20230121.tar.gz" ;;
         bdwgc)                   echo "gc-src/bdwgc-8.2.12.tar.gz" ;;
         xorriso)                 echo "xorriso-src/xorriso-1.5.8.tar.gz" ;;
+        ncurses)                 echo "base-src/ncurses-6.6.tar.gz" ;;
+        nnn)                     echo "base-src/nnn-5.3.tar.gz" ;;
         *)                       return 1 ;;
     esac
 }

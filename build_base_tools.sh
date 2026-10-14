@@ -17,6 +17,15 @@
 #            no X - that is the whole point of it, being the one diagnostic
 #            that runs while the desktop is deliberately NOT started
 #   rlperf   reads /proc and /dev/fb0. Its own comment: "Needs no X libraries"
+#   nnn      terminal file manager. Draws in a text console, so it belongs to
+#            the text-only image as much as to the desktop one
+#
+# The first five link nothing but libc. nnn is the exception: it links
+# ncursesw, and ncurses brings a terminfo database that no text-only image had
+# before. That is a real cost - roughly a megabyte in every image - and it is
+# paid deliberately, because "no X11 dependency" is the rule this dist follows
+# and ncurses is not an X11 dependency. The five below it still hold to the
+# stricter "libc only" check further down, which nnn is deliberately outside of.
 #
 # Staging them here means assemble-rootfs.sh ships them into every image and
 # only -x decides whether the desktop comes along.
@@ -51,6 +60,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 BASE_SRC="$SCRIPT_DIR/base-src"
 BASE_DIST="$SCRIPT_DIR/base-dist"
+# ncurses and nnn both install into a prefix, not straight into the dist, so
+# their .h files and build intermediates never end up in the image.
+BASE_PREFIX="$SCRIPT_DIR/base-prefix"
 
 CLEAN=0
 JOBS=""
@@ -124,6 +136,31 @@ SUDO_URL="https://www.sudo.ws/files/sudo-${SUDO_VER}.tar.gz"
 # which has no reachable upstream home any more.
 TTYREC_VER="1.1.7.1"
 TTYREC_URL="http://deb.debian.org/debian/pool/main/t/ttyrec/ttyrec_${TTYREC_VER}.orig.tar.gz"
+
+# nnn: terminal file manager. The only program here that needs a library, and
+# the reason this dist is no longer libc-only.
+#
+# WHY IT LIVES IN base-dist RATHER THAN xapps-dist: nnn is a TERMINAL program.
+# feh and xfiles need X, so they are xapps and ship only with a desktop backend.
+# nnn draws in a text console, which is exactly the case base-dist serves - a
+# text-only image, or an installed system booted with no desktop flags at all.
+# The four-VT console layout on the installed system has room for it.
+#
+# It brings ncurses, which is in no other dist, and with ncurses a terminfo
+# database - which a text-only image did not previously have at all. That is a
+# side effect rather than the goal, but a welcome one: an interactive shell
+# without terminfo falls back to dumb behaviour for anything TERM-dependent.
+#
+# Static linking is not an option and not merely a preference: there is no
+# libncursesw.a on the build host, so nnn cannot be linked statically against
+# it, and ncurses would have to be built with --enable-static to make that
+# possible. Shared plus a closure is the shape every other dist in this repo
+# already uses.
+NCURSES_VER="6.6"
+NCURSES_URL="https://ftp.gnu.org/gnu/ncurses/ncurses-${NCURSES_VER}.tar.gz"
+
+NNN_VER="5.3"
+NNN_URL="https://github.com/jarun/nnn/releases/download/v${NNN_VER}/nnn-v${NNN_VER}.tar.gz"
 
 header "Host prerequisites"
 MISSING=""
@@ -286,8 +323,239 @@ for t in rlin rlperf; do
       -o "$BASE_DIST/usr/bin/$t" \
       "$SCRIPT_DIR/x11-drv/$t.c" \
     || { fail "$t failed to build"; exit 1; }
-  ok "$t built ($(du -h "$BASE_DIST/usr/bin/$t" | cut -f1))"
+ok "$t built ($(du -h "$BASE_DIST/usr/bin/$t" | cut -f1))"
+  done
+
+# ---------------------------------------------------------------------------
+# ncurses, then nnn. In that order because nnn's configure looks for ncursesw,
+# and finding the right one is the whole point of building it ourselves rather
+# than linking whatever the host happens to have.
+# ---------------------------------------------------------------------------
+header "ncurses ${NCURSES_VER} (terminal library, for nnn)"
+rm -rf "$BASE_PREFIX"
+mkdir -p "$BASE_PREFIX"
+NCURSES_TARBALL="$BASE_SRC/ncurses-${NCURSES_VER}.tar.gz"
+fetch "$NCURSES_URL" "$NCURSES_TARBALL" "ncurses"
+step "unpack"
+# Into a dedicated directory. `tar --strip-components=1 -C "$BASE_SRC"` looks
+# right and is not: it strips the top directory and then dumps what is left
+# straight into base-src/, flattening the ncurses tree across every other
+# tool's build directory in there. Unpack into a named subdir instead, the way
+# sudo does above.
+rm -rf "$BASE_SRC/ncurses-${NCURSES_VER}"
+mkdir -p "$BASE_SRC/ncurses-${NCURSES_VER}"
+tar -xf "$NCURSES_TARBALL" -C "$BASE_SRC/ncurses-${NCURSES_VER}" --strip-components=1 \
+    || { fail "ncurses unpack failed"; exit 1; }
+
+step "configure"
+# The flags that matter, and what each one is here for:
+#
+#   --enable-widec        nnn links libncursesw, the wide-character build. This
+#                         is not cosmetic - without it the libncursesw soname
+#                         does not exist and nnn will not configure at all.
+#   --with-shared         the alternative is --with-static, which would need
+#                         libncursesw.a built too; shared is what every other
+#                         dist here does and keeps the build quick.
+#   --with-termlib        ncurses 6.x builds its terminal description into
+#                         libtinfo/libncursesw and needs this to produce a
+#                         usable share/terminfo at all.
+#   --without-debug       -g in the installed .so is a size cost in every image.
+#   --without-manpages    docs are not shipped and cost build time.
+#   --without-ada --without-cxx-binding   drop language bindings we have no use
+#                         for and that pull in compilers we would otherwise
+#                         have to require on the host.
+#
+# --with-shared plus --without-normal is deliberately NOT combined: the last
+# wins, and the default (normal libs included) is what nnn wants.
+( cd "$BASE_SRC/ncurses-${NCURSES_VER}" && \
+  ./configure \
+      --prefix="$BASE_PREFIX" \
+      --with-shared \
+      --enable-widec \
+      --with-termlib \
+      --without-debug \
+      --without-manpages \
+      --without-ada \
+      --without-cxx-binding \
+      > "$SCRIPT_DIR/.ncurses-configure.log" 2>&1 ) \
+  || { fail "ncurses configure failed"; tail -25 "$SCRIPT_DIR/.ncurses-configure.log" | sed 's/^/         /'; exit 1; }
+
+step "make"
+( cd "$BASE_SRC/ncurses-${NCURSES_VER}" && make $JOBS_FLAG > "$SCRIPT_DIR/.ncurses-build.log" 2>&1 ) \
+  || { fail "ncurses build failed"; tail -25 "$SCRIPT_DIR/.ncurses-build.log" | sed 's/^/         /'; exit 1; }
+step "make install"
+( cd "$BASE_SRC/ncurses-${NCURSES_VER}" && make install > "$SCRIPT_DIR/.ncurses-install.log" 2>&1 ) \
+  || { fail "ncurses install failed"; tail -25 "$SCRIPT_DIR/.ncurses-install.log" | sed 's/^/         /'; exit 1; }
+
+if [ ! -e "$BASE_PREFIX/lib/libncursesw.so" ]; then
+  fail "$BASE_PREFIX/lib/libncursesw.so was not built"
+  fail "expected with --enable-widec; a non-widec build leaves nnn without a library to link"
+  exit 1
+fi
+if [ ! -d "$BASE_PREFIX/share/terminfo" ]; then
+  fail "$BASE_PREFIX/share/terminfo missing - nnn needs a terminfo database to start"
+  exit 1
+fi
+ok "ncurses built ($(du -sh "$BASE_PREFIX" | cut -f1)), libncursesw + terminfo present"
+
+header "nnn ${NNN_VER} (terminal file manager)"
+NNN_TARBALL="$BASE_SRC/nnn-${NNN_VER}.tar.gz"
+fetch "$NNN_URL" "$NNN_TARBALL" "nnn"
+step "unpack"
+rm -rf "$BASE_SRC/nnn-${NNN_VER}"
+mkdir -p "$BASE_SRC/nnn-${NNN_VER}"
+tar -xf "$NNN_TARBALL" -C "$BASE_SRC/nnn-${NNN_VER}" --strip-components=1 \
+    || { fail "nnn unpack failed"; exit 1; }
+
+step "make"
+# No ./configure: nnn v5 ships a plain top-level Makefile, so the ncurses search
+# path is handed over as make variables instead. PREFIX is set for correctness
+# even though only the binary is taken below.
+#
+# The three overrides each fix a specific failure:
+#
+#   O_NORL=1              nnn links GNU readline by default and this host has it,
+#                         but the image has no readline and would need a second
+#                     library to satisfy it. nnn's own line editing is fine.
+#   CFLAGS_CURSES=...     the Makefile otherwise asks pkg-config, which finds the
+#                         HOST's ncursesw headers. -I must point at the prefix's
+#                         include/ncursesw specifically: ncurses installs curses.h
+#                         one level down, and pointing at include/ instead gives
+#                         an implicit-declaration error for addnwstr, because the
+#                         wide-character API is what nnn actually calls.
+#   LDLIBS_CURSES=...     same reason on the link side, plus libtinfow, which
+#                         ncurses 6 splits into its own library and which nnn
+#                         needs as a separate DT_NEEDED.
+#
+# `make install` is deliberately NOT used: it also installs a man page, a
+# .desktop file and an icon, none of which belong in this image.
+( cd "$BASE_SRC/nnn-${NNN_VER}" && \
+  make $JOBS_FLAG \
+      O_NORL=1 \
+      PREFIX="$BASE_PREFIX" \
+      CFLAGS_CURSES="-I$BASE_PREFIX/include/ncursesw" \
+      LDLIBS_CURSES="-L$BASE_PREFIX/lib -lncursesw -ltinfow" \
+      > "$SCRIPT_DIR/.nnn-build.log" 2>&1 ) \
+  || { fail "nnn build failed"; tail -25 "$SCRIPT_DIR/.nnn-build.log" | sed 's/^/         /'; exit 1; }
+
+install -m 0755 "$BASE_SRC/nnn-${NNN_VER}/nnn" "$BASE_DIST/usr/bin/nnn" \
+  || { fail "could not install nnn into base-dist"; exit 1; }
+
+# Stage what nnn needs at runtime.
+#
+# ncurses and tinfo are copied FROM THE PREFIX, not from an ldd closure. nnn
+# has no RPATH (deliberately - it resolves through the image), so `ldd` on the
+# build host happily answers with the host's own /usr/lib64/libncursesw.so.6
+# and libtinfow.so.6. A closure run first would therefore stage the HOST's
+# libraries and quietly ship those instead of the pinned ones, which is the
+# whole thing the pin exists to prevent. Ours go in first; the closure below
+# then only fills in what is genuinely still missing.
+#
+# Both the SONAME and the versioned file, deliberately as two real files rather
+# than a symlink: base-dist is packed into a cpio and extracted into a guest
+# that has no ld.so.cache and no /usr/lib to resolve through, and a dangling
+# symlink in a cpio is worse than a duplicate.
+mkdir -p "$BASE_DIST/usr/lib64" "$BASE_DIST/usr/share"
+for soname in libncursesw.so.6 libtinfow.so.6; do
+  # Matched with a loop rather than a quoted glob: "$BASE_PREFIX/lib/$soname".*
+  # inside [ -e ] expands to itself, the test fails, and the message blames the
+  # ncurses build for a shell quoting mistake.
+  matched=""
+  for f in "$BASE_PREFIX/lib/$soname".*; do
+    [ -e "$f" ] && matched="$matched $f"
+  done
+  if [ -z "$matched" ]; then
+    fail "no $soname.* under $BASE_PREFIX/lib - the pinned ncurses was not staged"
+    exit 1
+  fi
+  for f in $matched; do
+    real="$(readlink -f "$f")"
+    cp -f "$real" "$BASE_DIST/usr/lib64/$(basename "$f")"
+    [ "$(basename "$real")" != "$(basename "$f")" ] \
+      && cp -f "$real" "$BASE_DIST/usr/lib64/$(basename "$real")"
+  done
+  # The unversioned symlink, resolved and stored as a real file.
+  [ -e "$BASE_PREFIX/lib/$soname" ] \
+    || { fail "$BASE_PREFIX/lib/$soname missing"; exit 1; }
+  cp -f "$(readlink -f "$BASE_PREFIX/lib/$soname")" "$BASE_DIST/usr/lib64/$soname"
 done
+
+rm -rf "$BASE_DIST/usr/share/terminfo"
+mkdir -p "$BASE_DIST/usr/share/terminfo"
+
+# Only the entries worth carrying, not the full ncurses database.
+#
+# Left complete, share/terminfo is 2899 entries and 7.3M - which would make this
+# the single largest thing in base-dist by a wide margin, to serve a program that
+# will use one or two of them. Nothing in the image sets anything exotic: init.c
+# uses TERM=linux on the VT shells, mlterm brings its own terminfo with it in
+# x11-dist, and foot sets TERM itself.
+#
+# The list below is the terminals people actually put in TERM on this kind of
+# system, plus the `b/` backspace variants, which are separate files rather than
+# aliases and are what `st` and friends reach for. `linux` must be here and is
+# checked below: it is what the VT shells run with, and if it is missing every
+# interactive shell on the installed system degrades.
+TERMINFO_KEEP="linux xterm xterm-256color xterm-16color xterm-direct vt100 vt102 vt220 ansi dumb screen screen-256color tmux tmux-256color rxvt rxvt-unicode rxvt-unicode-256color st st-256color alacritty alacritty-direct konsole foot foot-256color vte vte-256color Eterm Eterm-256color putty putty-256color kitty wezterm tmux-direct gnome gnome-256color wsvt25 cons25 sun wyse50 wyse60"
+N_TINFO=0
+for t in $TERMINFO_KEEP; do
+  found=0
+  for p in "$BASE_PREFIX/share/terminfo/$(printf '%s' "$t" | cut -c1)/$t" \
+           "$BASE_PREFIX/share/terminfo/$t"; do
+    if [ -f "$p" ]; then
+      mkdir -p "$BASE_DIST/usr/share/terminfo/$(dirname "${p#"$BASE_PREFIX/share/terminfo/"}")"
+      cp -f "$p" "$BASE_DIST/usr/share/terminfo/${p#"$BASE_PREFIX/share/terminfo/"}"
+      found=1
+    fi
+  done
+  [ "$found" = "1" ] && N_TINFO=$((N_TINFO + 1))
+done
+
+if [ ! -f "$BASE_DIST/usr/share/terminfo/l/linux" ]; then
+  fail "terminfo 'linux' was not staged"
+  fail "every VT shell in the image runs with TERM=linux; without it they lose cursor and colour"
+  exit 1
+fi
+# The wanted count is the number of words in the list, not its first word.
+set -- $TERMINFO_KEEP
+info "terminfo: $N_TINFO of $# entries kept (ncurses ships 2899)"
+
+# Whatever is still missing from nnn's dependencies. The loader and libc are
+# skipped: assemble-rootfs.sh stages libc for the whole image, so copying a
+# second one here would only duplicate what is already there.
+collect_deps() {
+  local elf="$1" lib real base soname
+  for lib in $(ldd "$elf" 2>/dev/null | awk '{print $3}' | grep '^/' || true); do
+    base="$(basename "$lib")"
+    case "$base" in
+      ld-linux*|linux-vdso*|libc.so.6|libm.so.6) continue ;;
+    esac
+    [ -e "$BASE_DIST/usr/lib64/$base" ] && continue
+    real="$(readlink -f "$lib" 2>/dev/null || echo "$lib")"
+    cp -f "$real" "$BASE_DIST/usr/lib64/$base"
+    soname="$(basename "$real")"
+    [ "$soname" != "$base" ] && [ ! -e "$BASE_DIST/usr/lib64/$soname" ] \
+      && cp -f "$real" "$BASE_DIST/usr/lib64/$soname"
+    collect_deps "$BASE_DIST/usr/lib64/$base"
+  done
+}
+step "ldd closure for nnn"
+collect_deps "$BASE_DIST/usr/bin/nnn"
+
+# Verification. nnn is the one binary here that is allowed to link more than
+# libc, so the set is asserted explicitly rather than merely reported: a change
+# in nnn's dependencies should stop the build, not quietly change the image.
+NNN_DT="$(objdump -p "$BASE_DIST/usr/bin/nnn" 2>/dev/null | sed -n 's/^ *NEEDED *//p' \
+          | { grep -vE 'ld-linux|linux-vdso|^libc\.so\.' || true; } | LC_ALL=C sort | tr '\n' ' ')"
+if [ "$NNN_DT" != "libncursesw.so.6 libtinfow.so.6 " ]; then
+  fail "nnn linkage changed: '$NNN_DT'"
+  fail "expected exactly libncursesw.so.6 and libtinfow.so.6"
+  fail "readline here would mean the image needs a library this build does not stage"
+  exit 1
+fi
+ok "nnn built ($(du -h "$BASE_DIST/usr/bin/nnn" | cut -f1)), links exactly ncursesw + tinfow"
+ok "terminfo staged: $(find "$BASE_DIST/usr/share/terminfo" -type f | wc -l) entries, linux present"
+info "ncurses libs staged: $(ls "$BASE_DIST/usr/lib64" | grep -c ncurses) files"
 # The reason this build exists rather than x11-dist: if either grew anything
 # beyond libc, every text-only image would be carrying a library for a
 # diagnostic that runs before any graphics exist. ld-linux/linux-vdso are the
@@ -307,14 +575,14 @@ done
 
 # ---------------------------------------------------------------------------
 header "Self-check: the tree is complete and setuid survived"
-for t in sudo ttyrec ttyplay rlin rlperf; do
+for t in sudo ttyrec ttyplay rlin rlperf nnn; do
   p="$BASE_DIST/usr/bin/$t"
   if [ ! -x "$p" ]; then
     fail "$t missing from base-dist"
     exit 1
   fi
 done
-ok "all five binaries present"
+ok "all six binaries present"
 
 # sudo's setuid bit has to be in the packed file, not just on the build host's
 # copy: assemble-rootfs.sh copies with `cp -a`, but initramfs packing does not

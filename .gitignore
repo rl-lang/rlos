@@ -56,6 +56,7 @@ xapps-prefix/
 xapps-dist/
 # Tools with no X11 dependency (sudo, ttyrec, ttyplay, rlin, rlperf)
 base-src/
+base-prefix/
 base-dist/
 # In-guest installer, only built for mkiso.sh -i
 installer-dist/

@@ -150,3 +150,15 @@ bdwgc.sha256=d09001f45dabf1c29a5df3e63020a4bab5ad4aad69137bb07100c717e2ecba0b
 
 xorriso.url=https://ftp.gnu.org/gnu/xorriso/xorriso-1.5.8.tar.gz
 xorriso.sha256=319e3675cd7d986bf71d36596ca7b03dac172a758462bedcbbd298a7f86f36cc
+
+  # ncursesw (wide-char), so ncurses has to be here too - and with it a
+  # terminfo database, which no text-only image had before this.
+
+# Terminal file manager and its only dependency, for base-dist. nnn links
+# ncursesw (wide-char), so ncurses has to be here too - and with it a
+# terminfo database, which no text-only image had before this.
+ncurses.url=https://ftp.gnu.org/gnu/ncurses/ncurses-6.6.tar.gz
+ncurses.sha256=355b4cbbed880b0381a04c46617b7656e362585d52e9cf84a67e2009b749ff11
+
+nnn.url=https://github.com/jarun/nnn/releases/download/v5.3/nnn-v5.3.tar.gz
+nnn.sha256=c626d57d0aaa5effe04a7e8c24ec9000bc3aca012461b821ecd3c81f5131bb6d

@@ -280,16 +280,16 @@ if [[ -d "$BASE_DIST" ]]; then
     step "installing base tools from base-dist/ ($(du -sh "$BASE_DIST" | cut -f1))..."
     cp -a "$BASE_DIST/." "$TARGET/"
     N_BASE=0
-    for t in sudo ttyrec ttyplay rlin rlperf; do
+    for t in sudo ttyrec ttyplay rlin rlperf nnn; do
         if [[ -x "$TARGET/usr/bin/$t" ]]; then
             N_BASE=$((N_BASE + 1))
         else
             warn "base-dist/usr/bin/$t missing"
         fi
     done
-    substep "base tools: $N_BASE/5 staged (sudo ttyrec ttyplay rlin rlperf)"
+    substep "base tools: $N_BASE/6 staged (sudo ttyrec ttyplay rlin rlperf nnn)"
 else
-    warn "no base-dist/ - no sudo, ttyrec, ttyplay, rlin or rlperf"
+    warn "no base-dist/ - no sudo, ttyrec, ttyplay, rlin, rlperf or nnn"
     echo "  (run build_base_tools.sh to add them; they are needed on the text console too)"
 fi
 
