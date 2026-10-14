@@ -162,3 +162,145 @@ ncurses.sha256=355b4cbbed880b0381a04c46617b7656e362585d52e9cf84a67e2009b749ff11
 
 nnn.url=https://github.com/jarun/nnn/releases/download/v5.3/nnn-v5.3.tar.gz
 nnn.sha256=c626d57d0aaa5effe04a7e8c24ec9000bc3aca012461b821ecd3c81f5131bb6d
+
+# Wayland backend foundations (stage 1 of build_wl.sh). libdrm and pixman are
+# libdrm comes from dri.freedesktop.org rather than the freedesktop GitLab:
+# that project answers anonymous archive requests with a sign-in page, and
+# git clone over https needs credentials for it too. wlroots on the same GitLab
+# is anonymous, so this is per-project, not a host-wide restriction.
+# pixman IS a GitLab source archive - upstream publishes no release tarball - so
+# that hash is of the archive, which is stable for a given tag.
+libffi.url=https://github.com/libffi/libffi/releases/download/v3.4.7/libffi-3.4.7.tar.gz
+libffi.sha256=138607dee268bdecf374adf9144c00e839e38541f75f24a1fcf18b78fda48b2d
+
+wayland.url=https://gitlab.freedesktop.org/wayland/wayland/-/releases/1.26.0/downloads/wayland-1.26.0.tar.xz
+wayland.sha256=64176eaa46e4969903e286f8e5ef8331affc17fdf03ac9b58381d2b23162b7a3
+
+libdrm.url=https://dri.freedesktop.org/libdrm/libdrm-2.4.133.tar.xz
+libdrm.sha256=fc68f9d0ba2ea63c9432a299e14fea09fad7a8a66e8039fcd7802ca59f77b4f5
+
+pixman.url=https://gitlab.freedesktop.org/pixman/pixman/-/archive/pixman-0.46.4/pixman-pixman-0.46.4.tar.gz
+pixman.sha256=1b8288086e5da0ec5cb95cf174a919cc6fe4548f10dc3cd873b3bb1d9e8fdeab
+
+# wayland-protocols: the XML wlroots and sway generate their protocol code from.
+# Built here rather than taken from the host because a host wayland-protocols and
+# a pinned wayland-scanner disagreeing is exactly the kind of version skew that
+# shows up as mystery structs in generated code.
+wayland-protocols.url=https://gitlab.freedesktop.org/wayland/wayland-protocols/-/releases/1.49/downloads/wayland-protocols-1.49.tar.xz
+wayland-protocols.sha256=ec4c8f74942d6dff7ace8b4ce4764f0ef9ff618a935d974ea77edee2ad240b14
+
+# Stage 3 - the text stack sway renders with. sway links pango/cairo for its
+# status line and gdk-pixbuf for cursors and icons, so this is not optional
+# decoration; sway will not configure without it.
+glib.url=https://download.gnome.org/sources/glib/2.84/glib-2.84.4.tar.xz
+glib.sha256=8a9ea10943c36fc117e253f80c91e477b673525ae45762942858aef57631bb90
+
+freetype.url=https://download.savannah.gnu.org/releases/freetype/freetype-2.13.3.tar.xz
+freetype.sha256=0550350666d427c74daeb85d5ac7bb353acba5f76956395995311a9c6f063289
+
+fontconfig.url=https://gitlab.freedesktop.org/fontconfig/fontconfig/-/archive/2.16.0/fontconfig-2.16.0.tar.gz
+fontconfig.sha256=136da485b6c222222a016584ef35eb6fe7dfee52e3fa8f51a63405819285012f
+
+gdk-pixbuf.url=https://download.gnome.org/sources/gdk-pixbuf/2.44/gdk-pixbuf-2.44.2.tar.xz
+gdk-pixbuf.sha256=ea4ed9930b10db0655fb24f7c35b3375a65c58afbc9d3eb7417a0fd112bb6b08
+
+pango.url=https://download.gnome.org/sources/pango/1.56/pango-1.56.4.tar.xz
+pango.sha256=17065e2fcc5f5a5bdbffc884c956bfc7c451a96e8c4fb2f8ad837c6413cb5a01
+
+# Git components, pinned by commit - the same mechanism xfiles and Imlib2 use.
+libseat.repo=https://github.com/kennylevinsen/seatd
+libseat.sha=daa8196e10b180b8b0caeafa8e5f860eb1bd6706
+
+libinput.repo=https://gitlab.freedesktop.org/libinput/libinput
+libinput.sha=5cf833b572f5a33663888da321dce0ba1abd82a2
+libinput.note=tag 1.32.0
+
+wlroots.repo=https://gitlab.freedesktop.org/wlroots/wlroots
+wlroots.sha=d783533489e1f75d6886c2ab5c5960090ef268f8
+wlroots.note=tag 0.20.2
+
+xkbcommon.repo=https://github.com/xkbcommon/libxkbcommon
+xkbcommon.sha=e6b9c1d784cf5485b3bd9647e2da8ad828b0e135
+xkbcommon.note=1.14.0-beta2, the tip the checkout was made at
+
+# harfbuzz and fribidi are pango's shaping stack. Left unbuilt, pango resolves
+# them through the host's /usr/include and the image ends up carrying whichever
+# harfbuzz the build machine happened to have - the exact unpinned dependency
+# pins.lock exists to prevent.
+harfbuzz.url=https://github.com/harfbuzz/harfbuzz/releases/download/11.2.1/harfbuzz-11.2.1.tar.xz
+harfbuzz.sha256=093714c8548a285094685f0bdc999e202d666b59eeb3df2ff921ab68b8336a49
+
+fribidi.url=https://github.com/fribidi/fribidi/releases/download/v1.0.16/fribidi-1.0.16.tar.xz
+fribidi.sha256=1b1cde5b235d40479e91be2f0e88a309e3214c8ab470ec8a2744d82a5a9ea05c
+
+json-c.repo=https://github.com/json-c/json-c
+json-c.sha=9e99c1c
+json-c.note=built from the checkout in wl-src/jsonc
+
+# libevdev: sway reads input devices through libevdev and links it directly.
+libevdev.repo=https://gitlab.freedesktop.org/libevdev/libevdev
+libevdev.sha=d9af2e4
+libevdev.note=tag libevdev-1.14.0; built from the checkout in wl-src/libevdev
+
+# sway 1.12, from the GitHub home. git.sr.ht/~sircmpwn/sway stopped at 1.1-rc2
+# and the project moved. Version matters, not for style: sway 1.0 does not
+# compile against wlroots 0.20 at all, because that release reorganised its
+# headers. sway and wlroots are pinned as a compatible pair.
+sway.repo=https://github.com/swaywm/sway
+sway.sha=8886939
+sway.note=tag 1.12
+
+# Mesa, checked out at the 26.2 stable branch rather than main. Mesa publishes
+# release tarballs but has no release git tags past 9.2, so a clone of master is
+# a moving 26.3.0-devel snapshot; the branch tip is the pinnable form.
+mesa.repo=https://gitlab.freedesktop.org/mesa/mesa
+mesa.sha=9a0169f2a72d8d844124801b7abbdc75cc37f874
+mesa.note=branch 26.2, VERSION 26.2.4
+
+# Runtime closure libraries. None of these are needed to compile anything in
+# this image - they are DT_NEEDED entries followed at runtime. Built from source
+# anyway, because otherwise pango/cairo/fontconfig/wlroots bind to the build
+# host's copies and the image silently depends on one specific machine.
+zlib.url=https://zlib.net/fossils/zlib-1.3.1.tar.gz
+zlib.sha256=9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23
+
+bzip2.url=https://sourceware.org/pub/bzip2/bzip2-1.0.8.tar.gz
+bzip2.sha256=ab5a03176ee106d3f0fa90e381da478ddae405918153cca248e682cd0c4a2269
+
+expat.repo=https://github.com/libexpat/libexpat
+expat.sha=88b3ed553d8ad335559254863a33360d55b9f1d6
+expat.note=tag R_2_6_3; fontconfig's XML parser
+
+libpng.repo=https://github.com/pnggroup/libpng
+libpng.sha=51f5bd68b9b806d2c92b4318164d28b49357da31
+libpng.note=tag v1.6.45; cairo's image surface backend
+
+libdisplay-info.repo=https://gitlab.freedesktop.org/emersion/libdisplay-info
+libdisplay-info.sha=66b802d05b374cd8f388dc6ad1e7ae4f08cb3300
+libdisplay-info.note=tag 0.2.0. Required, not optional: it is in wlroots' DT_NEEDED, so wlroots will not start without it.
+
+# pcre2: glib hard-links libpcre2-8. An -x build gets it staged incidentally via
+# the X stack; a Wayland-only build has no such accident, so build it here.
+pcre2.url=https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.46/pcre2-10.46.tar.gz
+pcre2.sha256=8d28d7f2c3b970c3a4bf3776bcbb5adfc923183ce74bc8df1ebaad8c1985bd07
+
+# The session tools. All four are the user's own checkouts under ~/dev/c,
+# symlinked into wl-src/ - the same arrangement as mesa, xwayland and
+# libxkbcommon. Pinned by commit because none of them publishes release
+# tarballs on a host this build can reach.
+swaybg.repo=https://github.com/swaywm/swaybg
+swaybg.sha=a59ea3d
+swaybg.note=tag v1.2.2; gitlab.freedesktop.org/swaywm/swaybg is unreachable from the build host, github mirror used
+
+grim.repo=https://gitlab.freedesktop.org/emersion/grim
+grim.sha=155adb1
+grim.note=v1.5.0-5-g155adb1
+
+wf-recorder.repo=https://gitlab.freedesktop.org/emersion/wf-recorder
+wf-recorder.sha=c5de474
+wf-recorder.note=v0.6.0-5-gc5de474
+
+foot.repo=https://gitlab.freedesktop.org/foot/foot
+foot.sha=22ea7111
+foot.note=1.27.0-22-g22ea7111
+

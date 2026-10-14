@@ -123,9 +123,13 @@ case "$BACKEND" in
     wayland)
         if [[ ! -d "$WAYLAND_DIST/bin" ]]; then
             errmsg "-w was given but $WAYLAND_DIST does not exist"
-            info  "hint: run build_wl.sh first." >&2
-            info  "the Wayland backend is not implemented yet; -w is accepted so the" >&2
-            info  "plumbing can be built first, but it cannot produce an image yet." >&2
+            if [[ ! -f "$SCRIPT_DIR/build_wl.sh" ]]; then
+                info  "the Wayland backend is not implemented yet." >&2
+                info  "build_wl.sh does not exist, so there is nothing to run." >&2
+                info  "Use -x for a desktop, or no flag for text-only." >&2
+            else
+                info  "hint: run build_wl.sh first." >&2
+            fi
             exit 1
         fi
         ;;

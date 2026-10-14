@@ -95,6 +95,11 @@ fi
 . ./qemu_display.sh
 rlos_pick_display "$([[ "$VIDEO" == "1" ]] && echo video || echo headless)"
 VIDEO_ARGS=("${DISPLAY_ARGS[@]}")
+# A KMS device for the Wayland backend, on top of whatever framebuffer
+# rlos_pick_display chose. See rlos_pick_gpu for why -vga std alone
+# is not enough for a compositor to scan out to.
+rlos_pick_gpu "$([[ "$VIDEO" == "1" ]] && echo video || echo headless)"
+GPU_ARGS=("${GPU_ARGS[@]}")
 
 # A QMP socket is always offered so the guest framebuffer can be captured
 # without a VNC or GTK client, which matters because QEMU's GUI backends are
@@ -142,6 +147,7 @@ qemu-system-x86_64 \
     -cdrom "$ISO" \
     -boot d \
     "${VIDEO_ARGS[@]}" \
+    "${GPU_ARGS[@]}" \
     -qmp "unix:$QMP_SOCK,server=on,wait=off" \
     -serial mon:stdio \
     -m 2048 \

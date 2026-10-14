@@ -29,19 +29,27 @@ EOF
 }
 
 WITH_X11=0
+WITH_WAYLAND=0
 WITH_INSTALLER=0
 REBUILD=1
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -x|--x11) WITH_X11=1; shift ;;
+        -w|--wayland) WITH_WAYLAND=1; shift ;;
         -i|--installer) WITH_INSTALLER=1; shift ;;
         --no-rebuild) REBUILD=0; shift ;;
         -h|--help) usage; exit 0 ;;
         *) echo "unknown argument '$1'" >&2; usage; exit 1 ;;
     esac
 done
+if [[ "$WITH_X11" == "1" && "$WITH_WAYLAND" == "1" ]]; then
+    fail "-x and -w are mutually exclusive - pick one desktop"
+    exit 1
+fi
 X11_FLAG=""
 [[ "$WITH_X11" == "1" ]] && X11_FLAG="-x"
+WAYLAND_FLAG=""
+[[ "$WITH_WAYLAND" == "1" ]] && WAYLAND_FLAG="-w"
 INSTALLER_FLAG=""
 [[ "$WITH_INSTALLER" == "1" ]] && INSTALLER_FLAG="-i"
 
@@ -155,7 +163,7 @@ fi
 # last run left behind, otherwise "no -x" would silently inherit a desktop.
 if [[ "$REBUILD" == "1" ]]; then
     step "building initramfs (${X11_FLAG:-text-only}${INSTALLER_FLAG:+, }${INSTALLER_FLAG:-})..."
-    "$BUILD_INITRAMFS" $X11_FLAG $INSTALLER_FLAG
+    "$BUILD_INITRAMFS" $X11_FLAG $WAYLAND_FLAG $INSTALLER_FLAG
 elif [[ ! -f "$INITRAMFS" ]]; then
     fail "$INITRAMFS not found and --no-rebuild was given"
     info  "hint: drop --no-rebuild, or run ../rlos-initramfs/build_initramfs.sh"
@@ -277,17 +285,32 @@ if [[ ! -f "$OUT" ]]; then
 fi
 
 ok "$OUT ($(du -h "$OUT" | cut -f1))"
-if [[ "$WITH_X11" == "1" ]]; then
-    info  "backend: X11 desktop (built with -x)"
+
+# The backend and installer lines describe what THIS invocation requested. With
+# --no-rebuild that is not what the image contains, because the flags only reach
+# the initramfs when it is rebuilt - so they are not printed as fact. Saying
+# "backend: Wayland desktop" over an ISO whose initramfs was built for text is
+# worse than saying nothing: it is the one line a person would act on.
+if [[ "$REBUILD" == "0" && ( "$WITH_X11" == "1" || "$WITH_WAYLAND" == "1" || "$WITH_INSTALLER" == "1" ) ]]; then
+    warn  "--no-rebuild: -x/-w/-i were not applied - the initramfs was NOT rebuilt."
+    warn  "  Rebuild without --no-rebuild, or the ISO will not match these flags."
 else
-    info  "backend: text-only (no -x)"
+    if [[ "$WITH_X11" == "1" ]]; then
+        info  "backend: X11 desktop (built with -x)"
+    elif [[ "$WITH_WAYLAND" == "1" ]]; then
+        info  "backend: Wayland desktop (built with -w)"
+    else
+        info  "backend: text-only (no -x, no -w)"
+    fi
+    if [[ "$WITH_INSTALLER" == "1" ]]; then
+        info  "installer: yes - run ~/scripts/rlos-install.sh from the live session"
+    else
+        info  "installer: no (rebuild with -i to install from the running system)"
+    fi
 fi
-if [[ "$WITH_INSTALLER" == "1" ]]; then
-    info  "installer: yes - run ~/scripts/rlos-install.sh from the live session"
-else
-    info  "installer: no (rebuild with -i to install from the running system)"
-fi
-if [[ "$REBUILD" == "0" ]]; then
+# Only when no backend flag was given: otherwise the warning above has already
+# said this, more specifically, and repeating it is noise.
+if [[ "$REBUILD" == "0" && "$WITH_X11" != "1" && "$WITH_WAYLAND" != "1" && "$WITH_INSTALLER" != "1" ]]; then
     warn  "--no-rebuild, so this reflects initramfs.gz's previous contents"
 fi
 info "write to USB with: sudo dd if=$OUT of=/dev/sdX bs=4M status=progress oflag=sync"

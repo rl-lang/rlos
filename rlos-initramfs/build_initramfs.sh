@@ -17,10 +17,12 @@ OUT="initramfs.gz"
 
 usage() {
     cat >&2 << EOF
-usage: build_initramfs.sh [-x|--x11] [-i|--installer]
+usage: build_initramfs.sh [-x|--x11 | -w|--wayland] [-i|--installer]
 
   -x, --x11       include the X11 desktop. Without it the initramfs is text-only,
                   even when x11-dist/ exists. Requires build_x11.sh to have run.
+  -w, --wayland   include the Wayland desktop. Requires build_wl.sh to have
+                  run. Mutually exclusive with -x.
   -i, --installer include the in-guest installer. Requires
                   build_install_tools.sh, and grub-dist/ to exist (which is
                   what mkiso.sh -i generates).
@@ -28,10 +30,12 @@ EOF
 }
 
 WITH_X11=""
+WITH_WAYLAND=""
 WITH_INSTALLER=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -x|--x11) WITH_X11="-x"; shift ;;
+        -w|--wayland) WITH_WAYLAND="-w"; shift ;;
         -i|--installer) WITH_INSTALLER="-i"; shift ;;
         -h|--help) usage; exit 0 ;;
         *) errmsg "unknown argument '$1'"; usage; exit 1 ;;
@@ -45,7 +49,7 @@ if ! command -v gzip > /dev/null 2>&1; then
     fail "required binary 'gzip' not found on PATH"
 fi
 
-"$SCRIPT_DIR/../assemble-rootfs.sh" $WITH_X11 $WITH_INSTALLER "$STAGE"
+"$SCRIPT_DIR/../assemble-rootfs.sh" $WITH_X11 $WITH_WAYLAND $WITH_INSTALLER "$STAGE"
 
 header "Pack"
 step "packing $OUT (cpio newc + gzip -9)..."

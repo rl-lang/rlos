@@ -30,6 +30,38 @@ qemu_version() {
     sed -n '1s/.*version \([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' <<< "$v"
 }
 
+# rlos_pick_gpu <video|headless>
+#
+# Sets the global array GPU_ARGS. Separate from the display choice because the
+# two answer different questions. -vga std gives the guest an EFI GOP
+# framebuffer, which the kernel claims through DRM_EFIDRM and which the text
+# console draws on. That is NOT a modesetting DRM device, and for a Wayland
+# compositor it is not enough:
+#
+#   wlroots' DRM backend enumerates connectors over KMS. EFI-GOP exposes no
+#   connectors - no modes, no EDID, nothing to scan out. sway starts, finds zero
+#   outputs, and exits with "No outputs detected". The X11 path never noticed,
+#   because Xorg is perfectly content with a plain framebuffer.
+#
+# So the video path also gets a real modesetting device: virtio-gpu, which
+# presents a KMS device with a connector and a mode list. It needs no host GPU
+# and no host KMS driver, so it behaves identically under TCG and KVM.
+#
+# Headless gets nothing. -vga none already removes the framebuffer device, and
+# adding a card nobody can look at would cost memory for no benefit - a text
+# backend has no use for one.
+rlos_pick_gpu() {
+    local mode="$1"
+    if [[ "$mode" != "video" ]]; then
+        GPU_ARGS=()
+        return 0
+    fi
+    # virtio-gpu-pci rather than the virtio-gpu alias: naming the transport
+    # keeps the device on the PCI bus where the kernel's virtio-pci driver finds
+    # it, instead of depending on virtio-mmio auto-detection.
+    GPU_ARGS=(-device virtio-gpu-pci)
+}
+
 # rlos_pick_display <video|headless>
 #
 # Sets the global array DISPLAY_ARGS. In headless mode that is the plain serial

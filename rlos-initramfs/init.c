@@ -1227,16 +1227,81 @@ static char *x_envp[] = {
      * comes up empty. Must be a full path: it is not resolved against $HOME,
      * and the clients drop to uid 1000 whose home they do not share with
      * init. */
-    "XAUTHORITY=/run/Xauthority",
+"XAUTHORITY=/run/Xauthority",
     "USER=user",
     "LOGNAME=user",
     "LANG=C.UTF-8",
     "LC_ALL=C.UTF-8",
     NULL,
-};
+  };
+
+  /* ------------------------------------------------------------------
+   * The Wayland session environment, for sway and its clients.
+   *
+   * Separate from x_envp rather than shared with it, because the two disagree on
+   * the things that matter. A single shared array would have to pick one DISPLAY
+   * value and whichever it picked would be wrong for the other backend: X clients
+   * need DISPLAY=:0 pointing at Xorg, while Wayland clients must NOT see a
+   * DISPLAY at all. A program that finds DISPLAY set prefers X11 over Wayland,
+   * so a stale DISPLAY would send every GTK/Qt client hunting for an X server
+   * that is not running. (XWayland changes this again - once it exists, DISPLAY
+   * has to point at the XWayland server. See the XWayland note at the branch.)
+   *
+   * WAYLAND_DISPLAY is the display NAME, never a path. The client joins it with
+   * XDG_RUNTIME_DIR to get the socket, which is why this and WL_SOCKET_PATH
+   * below have to agree.
+   *
+   * XDG_RUNTIME_DIR is the user's, and init creates it: it must exist, be mode
+   * 0700 and be owned by uid 1000, or the compositor cannot bind its socket at
+   * all. It is the same directory the X11 branch uses for the i3 IPC socket, so
+   * creating it once serves both backends.
+   * ------------------------------------------------------------------ */
+  static char *wl_envp[] = {
+    "HOME=/home/user",
+    "PATH=/bin:/usr/bin:/sbin:/usr/sbin",
+    "SHELL=/bin/ash",
+    /* Identical to the X11 value: nothing in the Wayland stack reads TERM yet,
+     * but keeping them equal means a terminal added later behaves the same
+     * whichever backend started. */
+    "TERM=mlterm-256color",
+    "TERMINFO=/usr/share/terminfo",
+    "TERMINFO_DIRS=/usr/share/terminfo",
+    "WAYLAND_DISPLAY=wayland-0",
+    "XDG_RUNTIME_DIR=/run/user/1000",
+    "XDG_DATA_HOME=/home/user/.local/share",
+    "XDG_CONFIG_HOME=/home/user/.config",
+    "XDG_DATA_DIRS=/usr/local/share:/usr/share",
+    "XDG_CONFIG_DIRS=/etc/xdg",
+    /* sway uses this to decide how much session/logind machinery to expect.
+     * "tty" is the honest answer - this session comes from a virtual terminal -
+     * and claiming "wayland" would send it down a code path looking for a
+     * session manager that this image does not have. */
+    "XDG_SESSION_TYPE=tty",
+    "USER=user",
+    "LOGNAME=user",
+    "LANG=C.UTF-8",
+    "LC_ALL=C.UTF-8",
+    NULL,
+  };
 
 #define X_DISPLAY ":0"
-#define X_SOCKET  "/tmp/.X11-unix/X0"
+  #define X_SOCKET  "/tmp/.X11-unix/X0"
+
+  /* The Wayland display name and socket path.
+   *
+   * Not "wayland-0" by accident: that IS the name wlroots picks, in
+   * backend/session/direct.c -
+   *   wl_display_add_socket_auto() with no explicit name - and the socket lands
+   * at $XDG_RUNTIME_DIR/<name>. Since sway runs as uid 1000 and init is root,
+   * XDG_RUNTIME_DIR has to be the user's, not root's, and init has to create it
+   * with the right owner or the compositor cannot make its socket at all.
+   *
+   * :0 is deliberately NOT reused even before XWayland exists. XWayland
+   * allocates the next free display number and would come up as :1, and having
+   * the Wayland display be :0 while X clients talk to :1 is a confusing thing to
+   * debug for no benefit. */
+  #define WL_DISPLAY_NAME "wayland-0"
+  #define WL_SOCKET_PATH  "/run/user/1000/wayland-0"
 
 /* The unprivileged account the desktop runs as, and the one `sudo` escalates
  * from. It is uid/gid 1000 to match a conventional first user. */
@@ -1410,6 +1475,15 @@ static void run_x_helper(const char *path) {
 #define XAUTH_BIN  "/usr/bin/xauth"
 #define XAUTH_COOKIE_LEN 32  /* 16 random bytes, hex-encoded */
 #define X_WAIT_S    5   /* seconds to wait for the display per attempt */
+  /* The Wayland compositor's equivalent. Longer than X_WAIT_S on purpose: sway
+   * does strictly more before it binds the socket than Xorg does before it
+   * creates its one - it enumerates KMS connectors, reads EDID over each output,
+   * opens the input devices through libinput, and only then creates the display.
+   * On a slow disk or a slow KMS device 5 seconds is a coin flip, and the
+   * failure mode is not "slow boot", it is init killing a compositor that was
+   * about to succeed and reporting "sway did not create ..." for a machine that
+   * works. */
+  #define SOCK_WAIT_MS 10  /* seconds to wait for the Wayland socket */
 
 static void msleep(long ms) {
   struct timespec ts;
@@ -2268,14 +2342,31 @@ static int make_x_cookie(void) {
 /* Poll for the X server's unix socket. i3 and mlterm exit immediately when the
  * display is not up, so nothing may be launched before this returns 1. */
 static int wait_for_x(int seconds) {
-  int tries = seconds * 20;
-  for (int i = 0; i < tries; i++) {
-    if (access(X_SOCKET, F_OK) == 0)
-      return 1;
-    msleep(50);
+    int tries = seconds * 20;
+    for (int i = 0; i < tries; i++) {
+      if (access(X_SOCKET, F_OK) == 0)
+        return 1;
+      msleep(50);
+    }
+    return 0;
   }
-  return 0;
-}
+
+  /* wait_for_path: the same poll, for an arbitrary path.
+   *
+   * X_WAIT_S is hardcoded into wait_for_x because a Wayland socket was not
+   * something this image had when it was written. The compositor branch needs
+   * the identical behaviour - "has the thing that means clients can connect
+   * appeared yet" - and duplicating the loop inline would guarantee the two
+   * drift apart the first time the polling interval is tuned. */
+  static int wait_for_path(const char *path, int seconds) {
+    int tries = seconds * 20;
+    for (int i = 0; i < tries; i++) {
+      if (access(path, F_OK) == 0)
+        return 1;
+      msleep(50);
+    }
+    return 0;
+  }
 
 
 /*
@@ -2599,17 +2690,22 @@ struct supervised {
    * rather than a silent NULL. The compiler is the guard. */
   const char *ctty;
 };
-static struct supervised procs[12];
-static size_t nprocs = 0;
-
-/* Bounded insert. procs[] is a fixed array and several sites push to it, so the
- * only thing standing between a future thirteenth entry and a stack smash is
- * somebody counting correctly. There is now one spare slot - 11 of the 12 are
- * used: klogd, ash, Xorg, i3, mlterm, iwd, bluetoothd and the four VT shells -
- * and "no plausible thirteenth child" is exactly the kind of assumption that
- * stops being true, and the failure mode would be procs[] entries silently
- * aliasing each other. Refusing loudly is strictly better. */
-#define SUPERVISE_MAX 12
+static struct supervised procs[18];
+  static size_t nprocs = 0;
+  
+  /* Bounded insert. procs[] is a fixed array and several sites push to it, so the
+   * only thing standing between a future nineteenth entry and a stack smash is
+   * somebody counting correctly.
+   *
+   * The X11 backend used 11 of 12: klogd, ash, Xorg, i3, mlterm, iwd, bluetoothd
+   * and the four VT shells. The Wayland backend replaces Xorg/i3/mlterm (3) with
+   * sway/swaybar/swaybg (3) and adds seatd, so the peak is the same today - but
+   * that is a coincidence of arithmetic, not a property worth relying on. It was
+   * 12 while the comment above claimed "no plausible thirteenth child", and the
+   * Wayland branch made that false. 18 leaves real headroom, and the bound is
+   * what actually protects the array: exceeding it drops a child loudly rather
+   * than letting entries alias each other. */
+  #define SUPERVISE_MAX 18
 /* Variadic because a struct initialiser contains commas, which a three-arg macro
  * would split into separate arguments. No braces around __VA_ARGS__: the call
  * sites supply the compound literal's own braces, and adding another pair here
@@ -3115,9 +3211,17 @@ supervise(procs, &nprocs, { "ash", "/bin/ash",
   /* F2 is the desktop only when the image has one. Built without -x there is
    * no Xorg, so vt2 is free and becomes just another login shell rather than a
    * dead key next to four that work. */
-  int have_xorg = (access("/bin/Xorg", X_OK) == 0);
-  int vt_shell_first = have_xorg ? VT_SHELL_FIRST : VT_SHELL_MIN;
-  int n_vt_shells = VT_SHELL_LAST - vt_shell_first + 1;
+int have_xorg = (access("/bin/Xorg", X_OK) == 0);
+    /* sway claims a VT the same way Xorg does, so the F2 desktop slot belongs to
+     * whichever compositor is in the image. Keying this on Xorg alone was fine
+     * only because there was no other option; with -w there are two, and an
+     * image carrying both (which the -x -w rejection in assemble-rootfs.sh
+     * forbids, but init cannot assume the image was built by that script) would
+     * put sway and the VT shells on the same terminal. */
+    int have_sway = (access("/bin/sway", X_OK) == 0);
+    int have_desktop = have_xorg || have_sway;
+    int vt_shell_first = have_desktop ? VT_SHELL_FIRST : VT_SHELL_MIN;
+    int n_vt_shells = VT_SHELL_LAST - vt_shell_first + 1;
 
   /* Per-VT storage for the table below. It has to outlive this scope: procs[]
    * keeps a pointer to both strings for the lifetime of the run, and a loop-local
@@ -3139,12 +3243,17 @@ supervise(procs, &nprocs, { "ash", "/bin/ash",
     supervise(procs, &nprocs, { vt_shells[k].name, "/bin/ash",
         ash_argv, vt_shell_envp, 0, 1, -1, 0, 0, vt_shells[k].ctty });
   }
-  if (have_xorg)
-    warn("init: vt layout: F1 log, F2 desktop, F3-F6 shells\n");
-  else
-    warn("init: vt layout: F1 log, F2-F6 shells (no X11: built without -x)\n");
+if (have_xorg)
+      warn("init: vt layout: F1 log, F2 desktop, F3-F6 shells\n");
+    else if (have_sway)
+      warn("init: vt layout: F1 log, F2 sway, F3-F6 shells (Wayland backend)\n");
+    else
+      warn("init: vt layout: F1 log, F2-F6 shells (no desktop: built without -x or -w)\n");
 
   int use_x = 0;
+  /* Declared next to use_x rather than at the point of use, because the client
+   * branch below tests it and the compositor block in between is what sets it. */
+  int use_sway = 0;
 
   /*
    * Diagnostic boot: "rlos.diag" on the kernel command line. Report what the
@@ -3371,6 +3480,112 @@ supervise(procs, &nprocs, { "ash", "/bin/ash",
     }
   }
 
+    /* ---- the Wayland backend ------------------------------------------------
+     *
+     * Deliberately NOT an "if (use_x) ... else ..." fork of the X11 path. The
+     * two stacks share almost nothing: different display server, different
+     * protocol, different client model, and no shared configuration file.
+     * What they share is the shape - start a compositor, then start clients that
+     * connect to it - and that is all this borrows.
+     *
+     * XWayland is NOT started yet. It is a large extra dependency (needs meson,
+     * pixman, and pulls in xkbcomp and a chunk of the X protocol implementation)
+     * and nothing in the compositor stack needs it. When it is added it starts
+     * as a child of sway - `sway --unsupported-gpu` execs it - or as a
+     * supervised child of init, and at that point wl_envp needs a DISPLAY
+     * pointing at it, which is why DISPLAY is absent above rather than set to
+     * a placeholder.
+     */
+    if (have_sway) {
+      /* XDG_RUNTIME_DIR must exist, be mode 0700, and be owned by uid 1000.
+       *
+       * The compositor binds its socket inside it and refuses to start if the
+       * directory is missing or not owned by it. init runs as root, so without
+       * the chown sway would fail with an opaque "failed to create socket".
+       * 0700 and not 0755 because the protocol specification requires it:
+       * it is a per-user directory, and a world-readable one lets other users
+       * connect to the compositor. There is only one non-root user here, but
+       * the mode is free and the alternative is a habit.
+       *
+       * mkdir ignoring EEXIST is the point, not an oversight: the X11 branch
+       * has already created this same directory for the i3 IPC socket, and a
+       * plain mkdir would fail on a perfectly good directory. */
+      mkdir("/run/user", 0755);
+      mkdir("/run/user/1000", 0700);
+      if (chown("/run/user/1000", 1000, 1000) < 0)
+        warn("init: could not chown /run/user/1000 - sway will not be able to bind its socket\n");
+
+      /* No seatd. libseat can open a DRM node directly given the right
+       * permissions, and running seatd as root while sway runs as uid 1000
+       * would mean the compositor talking to a privileged helper it does not
+       * need in this image. wlroots' direct backend logs that it is using the
+       * direct session, which is the correct behaviour here. */
+
+      /* -c /etc/sway/config given explicitly, for the same reason i3 is given
+       * -c in the X11 branch: sway looks in a list of paths relative to $HOME
+       * before the system config, and $HOME belongs to the user, so an
+       * explicit absolute path is what actually makes the staged config load. */
+      static char *sway_argv[] = {
+          "/bin/sway", "-c", "/etc/sway/config", NULL,
+      };
+
+      pid_t sw = fork();
+      if (sw < 0) {
+        warn("init: fork for sway failed\n");
+      } else if (sw == 0) {
+        /* stdin is thrown away; stdout/stderr stay on the console on purpose.
+         * sway reports the failures that matter here - no outputs, no seat,
+         * permission denied on a DRM node - and swallowing them would leave a
+         * black VT with no explanation, which is the exact failure mode the X
+         * branch's equivalent comment describes. */
+        int devnull = open("/dev/null", O_RDWR);
+        if (devnull >= 0) {
+          dup2(devnull, 0);
+          if (devnull > 2)
+            close(devnull);
+        }
+        execve("/bin/sway", sway_argv, wl_envp);
+        warn("init: exec /bin/sway failed\n");
+        _exit(1);
+      }
+
+      /* Wait for the socket rather than assuming success. sway binds it once
+       * the backend is up, which is after it has opened the DRM device and
+       * enumerated outputs; a compositor that exits immediately - no KMS
+       * device, no permissions - would otherwise leave init claiming a desktop
+       * that is not there, with nothing on the console to explain why.
+       *
+       * The check is the socket's existence because that is the only observable
+       * that means "a client can connect", which is what "did the desktop
+       * start" actually has to mean. */
+      if (wait_for_path(WL_SOCKET_PATH, SOCK_WAIT_MS)) {
+        supervise(procs, &nprocs, { "sway", "/bin/sway",
+            sway_argv, wl_envp, 1, 1, sw, 0, 0, NULL });
+        use_sway = 1;
+        warn("init: Wayland display is up (");
+        warn(WL_DISPLAY_NAME);
+        warn(")\n");
+      } else {
+        warn("init: sway did not create ");
+        warn(WL_SOCKET_PATH);
+        warn("\n");
+        /* Before blaming sway, check the thing it cannot work around: wlroots'
+         * DRM backend needs a modesetting device. An EFI framebuffer is not one
+         * - it exposes no connectors over KMS - so with only -vga std and no
+         * virtio-gpu, sway starts and exits with "No outputs detected". That is
+         * the single most likely cause of this failure in QEMU and it is worth
+         * naming, because the symptom on screen is identical to a compositor
+         * that is simply broken. */
+        if (access("/dev/dri/card0", F_OK) != 0) {
+          warn("init:   no /dev/dri/card0. The compositor needs a KMS device, and\n");
+          warn("init:   an EFI framebuffer is not one - run run_qemu.sh --video,\n");
+          warn("init:   which adds virtio-gpu alongside the framebuffer.\n");
+        }
+        kill(sw, SIGKILL);
+        waitpid(sw, NULL, 0);
+      }
+    }
+
   if (use_x) {
 /* Wallpaper first, so there is something behind the desktop. It runs as
      * root (like setrootcursor) because it writes the root window's background
@@ -3410,21 +3625,41 @@ supervise(procs, &nprocs, { "ash", "/bin/ash",
      * Font, type engine and termtype come from the staged /usr/etc/mlterm/
      * config, which build_x11.sh writes - see the note there for why the
      * upstream defaults do not work in this guest. */
-    supervise(procs, &nprocs, { "mlterm", "/bin/mlterm",
-        mlterm_argv, x_envp, 1, 1, -1, 0, 0, NULL });
-  } else {
-    if (access("/bin/Xorg", X_OK) == 0) {
-      warn("init: X display did not come up - falling back to the text console\n");
+supervise(procs, &nprocs, { "mlterm", "/bin/mlterm",
+          mlterm_argv, x_envp, 1, 1, -1, 0, 0, NULL });
+    } else if (use_sway) {
+      /* swaybar. Started as the user, like every other client, because it
+       * connects to the compositor over $XDG_RUNTIME_DIR - a uid-1000 socket -
+       * and a root client is refused by the same logic that refuses any other
+       * uid. No -c config: swaybar's defaults are usable, and a config here
+       * would be a second thing to keep in sync with the X11 equivalents. */
+      static char *swaybar_argv[] = { "/bin/swaybar", NULL };
+      supervise(procs, &nprocs, { "swaybar", "/bin/swaybar",
+          swaybar_argv, wl_envp, 1, 1, -1, 0, 0, NULL });
+
+      /* No wallpaper and no terminal yet. swaybg is not built (it is a
+       * separate project, not part of the sway tree) and no terminal emulator
+       * is staged for the Wayland backend; sway's own background is whatever
+       * swaybg would have painted, which is the default solid colour. Adding
+       * either later is one supervise() call each - the table has room, which
+       * is the reason it was raised to 18 above rather than left at 12. */
     } else {
-      /* No Xorg in the image at all, as opposed to one that failed to start.
-       * The two need different advice: the first is a hardware/driver problem
-       * the rlin/rlperf diagnostics exist for, the second is simply that the
-       * image was assembled without -x. Say which, or the user is left hunting
-       * a graphics fault that was never in the picture. */
-      warn("init: no X11 in this image - text console only.\n");
-      warn("init:   built without -x (see assemble-rootfs.sh); rebuild with -x\n");
-      warn("init:   for the i3 + mlterm desktop.\n");
-    }
+      if (access("/bin/Xorg", X_OK) == 0) {
+        warn("init: X display did not come up - falling back to the text console\n");
+      } else if (access("/bin/sway", X_OK) == 0) {
+        warn("init: sway did not come up - falling back to the text console\n");
+        warn("init:   a KMS device is required. Under QEMU, run run_qemu.sh --video\n");
+        warn("init:   (it adds virtio-gpu), not the default headless mode.\n");
+      } else {
+        /* No compositor in the image at all, as opposed to one that failed to
+         * start. The two need different advice: the first is a hardware/driver
+         * problem the rlin/rlperf diagnostics exist for, the second is simply
+         * that the image was assembled without -x or -w. Say which, or the
+         * user is left hunting a graphics fault that was never in the picture. */
+        warn("init: no desktop in this image - text console only.\n");
+        warn("init:   built without -x or -w (see assemble-rootfs.sh); rebuild with\n");
+        warn("init:   -x for the i3 + mlterm desktop, or -w for sway.\n");
+      }
     /* No shell is added here: the rescue ash registered earlier runs on tty0
      * unconditionally, so this branch already has a prompt waiting. Adding a
      * second one would put two interactive ashes on the same console, racing
@@ -3841,9 +4076,10 @@ if (p == 0) {
               if (ll > 0) {
                 warn("last line: ");
                 warn(last);
-              }
-            }
-          }
+}
+      }
+    }
+
         }
         warn(procs[i].path);
         warn(") exited, restarting as:");
