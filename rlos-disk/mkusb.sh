@@ -58,7 +58,7 @@ SIZE="16G"
 
 usage() {
     cat >&2 << EOF
-usage: sudo $0 /dev/sdX [--size SIZE] [-x|--x11]
+usage: sudo $0 /dev/sdX [--size SIZE] [-x|--x11 | -w|--wayland]
 
 Installs rlOS to a whole block device. THE DEVICE IS ERASED.
 
@@ -68,6 +68,9 @@ Installs rlOS to a whole block device. THE DEVICE IS ERASED.
   -x, --x11     install the X11 desktop. Without it the stick boots to the
                 text console, even when x11-dist/ exists. Requires
                 build_x11.sh to have been run.
+  -w, --wayland install the Wayland desktop (sway). Without it the stick boots
+                to the text console, even when wayland-dist/ exists. Requires
+                build_wl.sh to have been run. Mutually exclusive with -x.
 
 Find it with 'lsblk -o NAME,SIZE,MODEL,TRAN,MOUNTPOINTS'. The one with TRAN=usb
 and nothing mounted is usually the stick.
@@ -75,6 +78,7 @@ EOF
 }
 
 WITH_X11=""
+WITH_WAYLAND=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --size)
@@ -82,6 +86,7 @@ while [[ $# -gt 0 ]]; do
             SIZE="$2"; shift 2 ;;
         --size=*) SIZE="${1#*=}"; shift ;;
         -x|--x11) WITH_X11="-x"; shift ;;
+        -w|--wayland) WITH_WAYLAND="-w"; shift ;;
         -h|--help) usage; exit 0 ;;
         -*) echo "error: unknown option '$1'" >&2; usage; exit 1 ;;
         *)
@@ -89,6 +94,28 @@ while [[ $# -gt 0 ]]; do
             DEVICE="$1"; shift ;;
     esac
 done
+
+# Reject -x -w here, before anything destructive happens. assemble-rootfs.sh
+# refuses the combination too, but by then the stick has already been
+# partitioned and written to - and "the script would have caught it" is not a
+# good reason to have wiped a device.
+if [[ -n "$WITH_X11" && -n "$WITH_WAYLAND" ]]; then
+    echo "error: -x and -w are mutually exclusive; pick one desktop" >&2
+    usage
+    exit 1
+fi
+
+# Say so early and specifically when the desktop was asked for but not built.
+# Without this, a missing wayland-dist/ surfaces much later as a generic
+# assemble-rootfs.sh failure, after the partitions exist.
+if [[ -n "$WITH_WAYLAND" && ! -d "$SCRIPT_DIR/../wayland-dist/bin" ]]; then
+    echo "error: -w given but wayland-dist/ has no bin/ - run ./build_wl.sh first" >&2
+    exit 1
+fi
+if [[ -n "$WITH_X11" && ! -d "$SCRIPT_DIR/../x11-dist" ]]; then
+    echo "error: -x given but x11-dist/ is missing - run ./build_x11.sh first" >&2
+    exit 1
+fi
 
 ESP_SIZE=512M
 
@@ -98,7 +125,7 @@ REFUSE_DISKS=(/dev/sda)
 
 
 if [[ $EUID -ne 0 ]]; then
-    echo "usage: sudo $0 /dev/sdX [--size SIZE] [-x|--x11]" >&2
+    echo "usage: sudo $0 /dev/sdX [--size SIZE] [-x|--x11 | -w|--wayland]" >&2
     die "must run as root (mkfs and mount need it)"
 fi
 
@@ -391,7 +418,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-"$SCRIPT_DIR/../assemble-rootfs.sh" $WITH_X11 "$STAGE"
+"$SCRIPT_DIR/../assemble-rootfs.sh" $WITH_X11 $WITH_WAYLAND "$STAGE"
 
 info "copying rootfs onto $P3"
 mount "$P3" "$ROOT_MNT"
