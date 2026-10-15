@@ -620,52 +620,6 @@ step "meson + ninja"
 need libseat.so.1 "libseat"
 ok "libseat built"
 
-header "wlroots 0.20.2 (the compositor library)"
-[ -d "$WL_SRC/wlroots" ] || git_clone "https://gitlab.freedesktop.org/wlroots/wlroots" "0.20.2" "$WL_SRC/wlroots"
-step "meson + ninja"
-# The option list is the whole story of this stage:
-#
-#   renderers=[]        no gles2, no vulkan -> no Mesa needed yet. The pixman
-#                       renderer is built anyway by render/meson.build.
-#   allocators=[udmabuf] gbm comes from Mesa, so it goes too. udmabuf is a
-#                       kernel memfd-backed allocator that needs no userspace
-#                       library at all.
-#   backends=drm,libinput  the two sway actually uses. x11 is excluded so
-#                       nothing in this build can find an X server.
-#   session=false       libseat is a separate dependency and a compositor with
-#                       no logind can still take input directly.
-#   xwayland=false       deferred to stage 4. It is the heaviest single item in
-#                       the Wayland backend and nothing about sway itself needs it.
-#
-# -Dcolor-management=disabled drops lcms2, which is only meaningful with a
-# calibrated display and pulls another library.
-( cd "$WL_SRC/wlroots" && \
-  meson setup build --prefix="$WL_PREFIX" -Dbuildtype=release \
-      -Drenderers=[] -Dallocators=udmabuf \
-      -Dbackends=drm,libinput \
-      -Dsession=enabled -Dxwayland=disabled \
-      -Dcolor-management=disabled -Dexamples=false \
-      > "$SCRIPT_DIR/.wl-wlroots.log" 2>&1 && \
-  ninja -C build >> "$SCRIPT_DIR/.wl-wlroots.log" 2>&1 && \
-  ninja -C build install >> "$SCRIPT_DIR/.wl-wlroots.log" 2>&1 ) \
-  || { fail "wlroots build failed"; tail -30 "$SCRIPT_DIR/.wl-wlroots.log" | sed 's/^/         /'; exit 1; }
-need libwlroots-0.20.so "wlroots"
-
-# wlroots 0.20 installs its pkg-config file as wlroots-0.20.pc, but sway asks
-# pkg-config for plain "wlroots" and gets Dependency "wlroots" not found. The
-# unversioned name was what wlroots shipped before 0.20, and consumers still use
-# it, so the alias is written here rather than by patching sway's meson.build.
-for pcdir in "$WL_PREFIX/lib/pkgconfig" "$WL_PREFIX/lib64/pkgconfig"; do
-    if [ -f "$pcdir/wlroots-0.20.pc" ]; then
-        cp -f "$pcdir/wlroots-0.20.pc" "$pcdir/wlroots.pc"
-    fi
-done
-PKG_CONFIG_PATH="$WL_PREFIX/lib/pkgconfig:$WL_PREFIX/lib64/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" \
-    pkg-config --exists wlroots \
-    || fail "wlroots.pc alias written but pkg-config still cannot see it"
-ok "wlroots built (pixman renderer, drm + libinput backends)"
-info "renderer: pixman only. libwlroots-0.20.so is linked against:"
-objdump -p "$WL_PREFIX/lib64/libwlroots-0.20.so" 2>/dev/null | sed -n "s/^ *NEEDED *//p" | grep -E "wlr|pixman" | sed "s/^/  /"
 
 fi
 # ===========================================================================
@@ -863,6 +817,108 @@ step "meson + ninja"
 meson_build json-c "$WL_SRC/jsonc" ".wl-jsonc.log" \
     -Dbuild_apps=false -Ddefault_library=static
 ok "json-c built (commit ${JSONC_GOT:0:12}, static)"
+
+# ---------------------------------------------------------------------------
+# Mesa: EGL + GLES2 + GBM.
+#
+# wlroots can run on the pixman renderer alone - that is what everything above
+# proves - but "pixman only" also means no hardware acceleration and no EGL at
+# all. This stage adds the second path.
+#
+# llvm is disabled on purpose, and that choice FORCES softpipe rather than
+# llvmpipe. Mesa 26.2 says so itself:
+#   meson.build:249: Feature llvm cannot be disabled:
+#   LLVMPipe Gallium driver requires LLVM
+# Every other Gallium driver that does real GL work is LLVM- or hardware-
+# specific, so the only remaining software rasteriser is softpipe - pure C, no
+# JIT, no GPU required.
+#
+# softpipe is meaningfully slower than llvmpipe. That is the correct trade here:
+# LLVM is the single most expensive dependency in this build by a wide margin,
+# and a live image that boots in minutes is worth more than GLES2 that is fast
+# on a machine with no GPU anyway. The pixman renderer remains available and is
+# what wlroots will actually use in most sessions; this exists so GLES2 is
+# present as an option at all.
+# ---------------------------------------------------------------------------
+
+# Read before the header prints it: `set -u` makes an unset variable a hard error,
+# and putting the assignment first is the only order that works.
+MESA_VERSION="$(cat "$WL_SRC/mesa/VERSION" 2>/dev/null || echo unknown)"
+header "Mesa ${MESA_VERSION} (EGL + GLES2 + GBM, softpipe software GL)"
+step "meson + ninja"
+# -Dgallium-drivers=softpipe is forced by -Dllvm=disabled rather than chosen for
+#   its own sake: llvmpipe is Mesa's faster software rasteriser but it is a JIT
+#   built on LLVM, and meson.build:249 refuses outright when llvm is disabled -
+#   "Feature llvm cannot be disabled: LLVMPipe Gallium driver requires LLVM".
+#   softpipe is the remaining pure-software driver.
+# -Dshared-glapi=disabled: the GL dispatch table is only needed for desktop GL,
+#   which nothing here uses, and it is a separate library to carry.
+# -Dglx/dri/x11 off: there is no X11 in a Wayland image. platforms=wayland is the
+#   only one that matters and it is what EGL's wayland platform binds to.
+# Type matters here and meson enforces it: gles2/egl/gbm/llvm/shared-glapi/glvnd/
+# valgrind are feature options taking enabled/disabled/auto, while opengl and
+# build-tests are plain booleans taking true/false. -Dopengl=disabled is a hard
+# "value disabled is not boolean" error, not a warning.
+meson_build mesa "$WL_SRC/mesa" ".wl-mesa.log" \
+    -Dllvm=disabled -Dgallium-drivers=softpipe -Dshared-glapi=disabled \
+    -Dgles2=enabled -Dopengl=false -Degl=enabled -Dgbm=enabled \
+    '-Dvulkan-drivers=[]' -Dglx=disabled -Dgles1=disabled \
+    -Dglvnd=disabled -Dvalgrind=disabled -Dlibunwind=disabled \
+    -Dmesa-clc=system -Dspirv-tools=disabled \
+    -Dplatforms=wayland -Dbuild-tests=false '-Dtools=[]' \
+    -Dshared-llvm=disabled
+need libEGL.so "Mesa EGL"
+need libGLESv2.so "Mesa GLESv2"
+need libgbm.so "Mesa gbm"
+ok "Mesa built (softpipe: software GLES2, no LLVM)"
+
+header "wlroots 0.20.2 (the compositor library)"
+[ -d "$WL_SRC/wlroots" ] || git_clone "https://gitlab.freedesktop.org/wlroots/wlroots" "0.20.2" "$WL_SRC/wlroots"
+step "meson + ninja"
+# The option list is the whole story of this stage:
+#
+#   renderers=[]        no gles2, no vulkan -> no Mesa needed yet. The pixman
+#                       renderer is built anyway by render/meson.build.
+#   allocators=[udmabuf] gbm comes from Mesa, so it goes too. udmabuf is a
+#                       kernel memfd-backed allocator that needs no userspace
+#                       library at all.
+#   backends=drm,libinput  the two sway actually uses. x11 is excluded so
+#                       nothing in this build can find an X server.
+#   session=false       libseat is a separate dependency and a compositor with
+#                       no logind can still take input directly.
+#   xwayland=false       deferred to stage 4. It is the heaviest single item in
+#                       the Wayland backend and nothing about sway itself needs it.
+#
+# -Dcolor-management=disabled drops lcms2, which is only meaningful with a
+# calibrated display and pulls another library.
+( cd "$WL_SRC/wlroots" && \
+  meson setup build --prefix="$WL_PREFIX" -Dbuildtype=release \
+      '-Drenderers=gles2' '-Dallocators=gbm' \
+      -Dbackends=drm,libinput \
+      -Dsession=enabled -Dxwayland=disabled \
+      -Dcolor-management=disabled -Dexamples=false \
+      > "$SCRIPT_DIR/.wl-wlroots.log" 2>&1 && \
+  ninja -C build >> "$SCRIPT_DIR/.wl-wlroots.log" 2>&1 && \
+  ninja -C build install >> "$SCRIPT_DIR/.wl-wlroots.log" 2>&1 ) \
+  || { fail "wlroots build failed"; tail -30 "$SCRIPT_DIR/.wl-wlroots.log" | sed 's/^/         /'; exit 1; }
+need libwlroots-0.20.so "wlroots"
+
+# wlroots 0.20 installs its pkg-config file as wlroots-0.20.pc, but sway asks
+# pkg-config for plain "wlroots" and gets Dependency "wlroots" not found. The
+# unversioned name was what wlroots shipped before 0.20, and consumers still use
+# it, so the alias is written here rather than by patching sway's meson.build.
+for pcdir in "$WL_PREFIX/lib/pkgconfig" "$WL_PREFIX/lib64/pkgconfig"; do
+    if [ -f "$pcdir/wlroots-0.20.pc" ]; then
+        cp -f "$pcdir/wlroots-0.20.pc" "$pcdir/wlroots.pc"
+    fi
+done
+PKG_CONFIG_PATH="$WL_PREFIX/lib/pkgconfig:$WL_PREFIX/lib64/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" \
+    pkg-config --exists wlroots \
+    || fail "wlroots.pc alias written but pkg-config still cannot see it"
+ok "wlroots built (pixman + gles2 renderers, drm + libinput backends)"
+info "renderer: pixman always, gles2 via Mesa softpipe. wlroots is linked against:"
+objdump -p "$WL_PREFIX/lib64/libwlroots-0.20.so" 2>/dev/null | sed -n "s/^ *NEEDED *//p" | grep -E "wlr|pixman" | sed "s/^/  /"
+
 
 header "sway 1.12 (the compositor)"
 # From github.com/swaywm/sway, not git.sr.ht/~sircmpwn/sway. That repository
@@ -1064,12 +1120,9 @@ for b in sway swaybar swaymsg swaybg foot grim wf-recorder; do
         cp -f "$WL_PREFIX/bin/$b" "$WL_DIST/bin/"
     fi
 done
-# wayland-sessions: sway's /etc/sway/config plus sway.desktop, installed by
-# meson into share/. Staged whole rather than file-by-file so a future sway
-# release adding a session file does not silently lose it.
-# swaybg's default config path, and foot's terminfo-independent defaults, need no
-# staged config - both have usable built-in behaviour. Only sway needs -c, and
-# its config is installed into etc/sway/ by meson, which is copied above.
+# wayland-sessions: sway.desktop, installed by meson into share/. Staged whole
+# rather than file-by-file so a future sway release adding a session file does
+# not silently lose it.
 if [ -d "$WL_PREFIX/share/wayland-sessions" ]; then
     mkdir -p "$WL_DIST/usr/share/wayland-sessions"
     cp -rf "$WL_PREFIX/share/wayland-sessions/." "$WL_DIST/usr/share/wayland-sessions/"
@@ -1080,6 +1133,134 @@ fi
 if [ -x "$WL_PREFIX/bin/seatd" ]; then
     cp -f "$WL_PREFIX/bin/seatd" "$WL_DIST/bin/"
 fi
+
+# sway's config is WRITTEN, not copied.
+#
+# The upstream one that meson installed into wl-prefix/etc/sway/ cannot be used,
+# for three reasons, each of which fails quietly rather than loudly:
+#
+#   1. It contains a build-host path. meson baked the configure prefix into the
+#      wallpaper line:
+#        output * bg /home/.../wl-prefix/share/backgrounds/sway/Sway_Wallpaper...png
+#      In the guest that path does not exist, so the wallpaper silently does not
+#      appear - and the same prefix leak my staging gate looks for in binaries is
+#      just as wrong in a text file.
+#   2. It binds $mod+Shift+e to `swaynag`, which is not built here
+#      (-Dswaynag=false), and $mod+d to `wmenu-run`, which was never a target at
+#      all. Both keybindings would run nothing.
+#   3. It has no `exec` line, so it opens a desktop with no terminal and no
+#      launcher.
+#
+# It also wants swaybg for an image wallpaper. This image stages no wallpaper
+# file, so the background is set with sway's own `background` command instead -
+# one fewer daemon to supervise for a solid colour.
+#
+# The config is the session's own description of what to run, so `exec foot`
+# belongs here rather than in init.c. init starts the compositor; the compositor
+# starts its session. Putting the terminal in init as well would mean two
+# owners for one process.
+mkdir -p "$WL_DIST/etc/sway"
+cat > "$WL_DIST/etc/sway/config" <<'SWAY_CONFIG'
+# /etc/sway/config - rlOS Wayland session
+#
+# Written by build_wl.sh, not shipped by sway. See the comment above about the
+# build-host path in upstream's copy and the two keybindings that call binaries
+# this image does not contain.
+
+### Variables
+set $mod Mod4
+set $left h
+set $down j
+set $up k
+set $right l
+set $term foot
+
+### Output
+# A solid colour, not an image. `output * bg ... fill` with a file needs a
+# wallpaper staged into the image; nothing is, so sway's `background` command is
+# the honest way to get a flat backdrop with no extra daemon running.
+background #1c1c1c solid_color
+
+### Autostart
+# The session's terminal. sway execs this and keeps it as a child, so it dies
+# with the compositor and restarts with it - which is why it is here and not
+# registered in init.c's supervised table.
+exec $term
+
+### Keys
+    bindsym $mod+Return exec $term
+    bindsym $mod+Shift+q kill
+    bindsym $mod+Shift+c reload
+
+    # Focus and move. Vim keys under Mod4, arrows under Mod1.
+    bindsym $mod+$left  focus left
+    bindsym $mod+$down   focus down
+    bindsym $mod+$up     focus up
+    bindsym $mod+$right  focus right
+    bindsym $mod+Left    focus left
+    bindsym $mod+Down    focus down
+    bindsym $mod+Up      focus up
+    bindsym $mod+Right   focus right
+    bindsym $mod+Shift+$left focus move left
+    bindsym $mod+Shift+$down  focus move down
+    bindsym $mod+Shift+$up    focus move up
+    bindsym $mod+Shift+$right focus move right
+    bindsym $mod+Shift+Left   move left
+    bindsym $mod+Shift+Down   move down
+    bindsym $mod+Shift+Up     move up
+    bindsym $mod+Shift+Right  move right
+
+    # Split containers, then the orientation to apply to new ones.
+    bindsym $mod+b splith
+    bindsym $mod+v splitv
+    bindsym $mod+s layout stacking
+    bindsym $mod+w layout tabbed
+    bindsym $mod+e layout toggle split
+
+    # Fullscreen and floating.
+    bindsym $mod+f fullscreen
+    bindsym $mod+Shift+space floating toggle
+    floating_modifier $mod normal
+
+### Input
+input * {
+    repeat_delay 300
+    repeat_rate 50
+}
+
+### Output layout
+# Single output, filling it. QEMU presents one connector; spelling it out means
+# sway does not have to guess when there is no EDID to read.
+output * bg #1c1c1c solid_color
+SWAY_CONFIG
+
+# Assert it exists and is not the upstream one we rejected - if a future change
+# ever copies wl-prefix/etc/sway/ back over this, the assertion catches it.
+[ -s "$WL_DIST/etc/sway/config" ] \
+    || fail "sway config was not written to $WL_DIST/etc/sway/config"
+if grep -q "$WL_PREFIX" "$WL_DIST/etc/sway/config"; then
+    fail "the staged sway config contains the build prefix $WL_PREFIX"
+fi
+for absent in swaynag wmenu-run; do
+    grep -q "$absent" "$WL_DIST/etc/sway/config" \
+        && fail "the staged sway config invokes $absent, which this image does not build"
+done
+# fontconfig configuration, shared with the X11 backend.
+#
+# etc-rlos/fonts.conf is the single copy - build_x11.sh reads the same file - so
+# the monospace/sans-serif aliases and the JetBrainsMono Nerd Font mapping cannot
+# drift between the two backends. assemble-rootfs.sh copies it to
+# etc/fonts/fonts.conf for -w exactly as it does for -x.
+#
+# It is not optional: foot resolves its default face through fontconfig during
+# startup, and with no config a terminal either renders every glyph as a box or
+# exits outright.
+[[ -f "$SCRIPT_DIR/etc-rlos/fonts.conf" ]] || fail "etc-rlos/fonts.conf missing"
+mkdir -p "$WL_DIST/usr/share/rlos"
+cp -f "$SCRIPT_DIR/etc-rlos/fonts.conf" "$WL_DIST/usr/share/rlos/fonts.conf"
+ok "fonts.conf staged ($(wc -l < "$WL_DIST/usr/share/rlos/fonts.conf") lines)"
+
+ok "sway config written ($(wc -l < "$WL_DIST/etc/sway/config") lines, no build-host paths)"
 
 # ---- ldd closure ------------------------------------------------------------
 # Resolve with LD_LIBRARY_PATH pointed at the prefix. Without it ldd falls back
@@ -1127,14 +1308,41 @@ for lib in $CLOSURE_SEEN; do
             WL_FROM_PREFIX="$WL_FROM_PREFIX $base"
             ;;
         /usr/*|/lib/*|/lib64/*)
-            # The host's. Stage by basename only - keeping the absolute path
-            # would pull /usr/lib64/... into the initramfs twice over, and the
-            # guest already has some of these from build_gcc.sh (libc, libm).
+            # Resolved from the HOST. Three of these have a from-source copy in
+            # gcc-dist/, built by the same toolchain as the rest of the image, and
+            # those MUST win over the host's - see the substitution below.
             WL_FROM_HOST="$WL_FROM_HOST $base"
             ;;
     esac
     N_WL_LIBS=$((N_WL_LIBS + 1))
 done
+
+# Prefer this project's own C++ runtime over the build host's.
+#
+# Mesa's libgallium-26.2.4.so has libstdc++.so.6 in DT_NEEDED, so ldd resolves
+# it to /usr/lib64/libstdc++.so.6 - the build host's, compiled by whatever
+# distro gcc the host has. Staging that is the exact unpinned-host dependency
+# every gate in this script exists to prevent, and it is worse than useless: a
+# libstdc++ built by a different compiler than the one that produced the
+# neighbouring libgcc_s is a version-skew crash at runtime rather than a link
+# error.
+#
+# gcc-dist/usr/lib64/libstdc++.so.6 is this project's own, from the pinned
+# GCC 16.2.0 (GLIBCXX_3.4.36). Overwrite whatever ldd pointed at.
+GCC_DIST="$SCRIPT_DIR/gcc-dist"
+if [ -f "$GCC_DIST/usr/lib64/libstdc++.so.6" ]; then
+    cp -f "$GCC_DIST/usr/lib64/libstdc++.so.6" "$WL_DIST/usr/lib64/libstdc++.so.6"
+    ln -sf libstdc++.so.6 "$WL_DIST/usr/lib64/libstdc++.so"
+    WL_FROM_HOST="$(echo "$WL_FROM_HOST" | tr ' ' '\n' |
+        grep -vx 'libstdc++.so.6' | grep -v '^$' | tr '\n' ' ')"
+    WL_FROM_GCC="libstdc++.so.6 (from gcc-dist, $(strings "$WL_DIST/usr/lib64/libstdc++.so.6" 2>/dev/null |
+        grep -oE 'GCC: \(GNU\) [0-9]+\.[0-9]+\.[0-9]+' | head -1))"
+    ok "libstdc++.so.6 staged from gcc-dist, not the build host"
+else
+    warn "gcc-dist/usr/lib64/libstdc++.so.6 not found; libstdc++.so.6 will be"
+    warn "  the BUILD HOST's. Run ./build_gcc.sh first for a version-consistent"
+    warn "  C++ runtime - Mesa's libgallium links it and will fail otherwise."
+fi
 
 # Copy every distinct real file behind the prefix libs we referenced, plus the
 # SONAME aliases each one needs. Walking the whole prefix (rather than only
@@ -1224,6 +1432,43 @@ if [ -n "$WL_DLOPEN_MISSING" ]; then
 fi
 ok "every dlopen'd library of every shipped ELF resolves inside usr/lib64/"
 
+# ---- versioned symbol requirements -----------------------------------------
+# A DT_NEEDED can carry a VERSION requirement: libfoo.so.1(FOO_1.2). If the
+# library staged under that name does not define that version node, ld.so refuses
+# to load the binary - "version 'FOO_1.2' not found (required by ...)".
+#
+# Not hypothetical here. It happened once: pcre2 was added to the prefix AFTER
+# sway had already been built, so sway recorded the BUILD HOST's version tag
+# (PCRE2_10.47) against libpcre2-8.so.0, while the pcre2 actually staged defines
+# no version node at all. The DT_NEEDED gate above passed, because by name the
+# library WAS staged. It broke only at run time, on every execution, and only
+# announced itself as a warning on stderr that happened to get noticed.
+#
+# So verify the requirement itself, not just the library's name. readelf -V
+# prints the needs table as "File: <lib>" followed by one "Name: <version>" per
+# requirement, so pair them up and check the staged copy defines each node.
+WL_BADVER=""
+for elf in $ALL_WL_ELFS; do
+    [ -f "$elf" ] || continue
+    while read -r vfile vname; do
+        [ -n "$vfile" ] && [ -n "$vname" ] || continue
+        [ -e "$WL_DIST/usr/lib64/$vfile" ] || continue
+        if ! readelf -V "$WL_DIST/usr/lib64/$vfile" 2>/dev/null |
+             grep -q "Name: $vname\$"; then
+            WL_BADVER="$WL_BADVER $(basename "$elf")->$vfile($vname)"
+        fi
+    done < <(readelf -V "$elf" 2>/dev/null |
+             awk '/File: lib/ {f=$2; next}
+                  /Name: / && f {print f, $2; f=""}')
+done
+WL_BADVER="$(printf '%s\n' $WL_BADVER | sort -u | grep '[^[:space:]]' | tr '\n' ' ' || true)"
+if [ -n "$WL_BADVER" ]; then
+    echo "  [FAIL] these binaries require a symbol version the staged library does not define:" >&2
+    echo "    $WL_BADVER" >&2
+    fail "ld.so would refuse to load them; rebuild the dependents against the prefix"
+fi
+ok "every symbol-version requirement resolves against a staged library"
+
 # ---- and the absolute-path check --------------------------------------------
 # A DT_NEEDED, RPATH or RUNPATH holding an absolute BUILD path means the binary
 # was staged out of a build tree instead of an install tree. It would work on
@@ -1244,6 +1489,9 @@ fi
 ok "no staged binary references the build host"
 
 # ---- what came from where, for the log --------------------------------------
+if [ -n "${WL_FROM_GCC:-}" ]; then
+    info "staged from gcc-dist: $WL_FROM_GCC"
+fi
 if [ -n "$WL_FROM_HOST" ]; then
     info "resolved against the host (staged by basename): $(echo $WL_FROM_HOST | tr ' ' '\n' | wc -l | tr -d ' ') lib(s)"
     info "  $(echo $WL_FROM_HOST)"
@@ -1259,5 +1507,8 @@ info "binaries:"
 for b in $(ls "$WL_DIST/bin" 2>/dev/null); do
     printf "       %-14s %s\n" "$b" "$(du -h "$WL_DIST/bin/$b" | cut -f1)"
 done
-info "next: stage 4 is Mesa for the GLES2 renderer. XWayland comes later still."
-info "      init.c still has no sway branch, so -w cannot boot yet."
+info "renderers: pixman always; GLES2 available through Mesa softpipe"
+info "still to do:"
+info "  - XWayland (stage 5), which unblocks xapps-dist: feh, xfiles, xmenu"
+info "  - ffmpeg (stage 6), which unblocks wf-recorder"
+info "  - a QEMU boot test of -w; nothing has run the compositor yet"

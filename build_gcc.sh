@@ -1,15 +1,23 @@
 #!/usr/bin/env bash
-# build_gcc.sh - build GCC (C only + LTO) for the rlos guest + stage its files
+# build_gcc.sh - build GCC (C + C++ runtime, LTO) for the rlos guest + stage its files
 #
 # This replaces build_tcc.sh. rlt emits C99; tcc compiled it fast and small
 # but had a built-in assembler and linker, which is why the guest never needed
 # binutils. GCC has neither, so build_binutils.sh is a hard prerequisite - the
 # driver shells out to `as` and `ld` and there is no built-in fallback.
 #
-# What is deliberately NOT here: any C++ front end, or the libstdcxx/libgomp/
-# libquadmath target libraries. rlt emits C, and nothing in the guest links
-# OpenMP or __float128. C-only takes the install from ~41MB of cc1 plus a
-# second language front end down to a single cc1.
+# What is deliberately NOT here: libgomp, libquadmath, __float128 support.
+# libgomp is omitted because nothing in the guest links OpenMP, libquadmath
+# because nothing uses __float128. C++ IS enabled now, though it was not before:
+# Mesa is written in C++, and its libgallium has libstdc++.so.6 in DT_NEEDED, so
+# the Wayland backend (-w) cannot load its EGL/GLES2 renderer without the C++
+# runtime. The front end itself is still unused by rlt, which emits C, so only
+# all-target-libstdc++-v3 is built below - not cc1plus as a usable user front end.
+#
+# The trade: a second language front end takes the install from ~41MB of cc1
+# alone to cc1 plus cc1plus, roughly doubling libexec. The saving is kept by
+# building no C++ compiler driver support beyond what the libraries need - see
+# the make targets in the build step below.
 #
 # --enable-lto is the reason to build gcc rather than ship tcc: `rlt --compile
 # --lto` needs a real LTO implementation with a working plugin and wrapper,
@@ -24,6 +32,8 @@
 #   lib/gcc/<triplet>/<ver>/               libgcc.a, libgcc_s.so.1,
 #                                          crtbegin.o, crtend.o, include-fixed/
 #   lib64/                                 glibc crt objects + the -l targets
+#   usr/lib64/                             libgcc_s.so.1, libstdc++.so.6 (the
+#                                          C++ runtime Mesa's libgallium needs)
 #   include/...                            glibc header closure + gcc's own
 #                                          freestanding headers + ffi.h
 #   <tooldir>/bin/                         where the driver looks for as/ld
@@ -55,6 +65,9 @@ RL_LANG_DIR="${RL_LANG_DIR:-$SCRIPT_DIR/rl-lang}"
 GCC_PIN="78d4ac73dd391005b895a6148cd9831e28e1208b" # releases/gcc-16.2.0
 GCC_DIST="$SCRIPT_DIR/gcc-dist"
 GCC_SRC="$SCRIPT_DIR/gcc"
+# Resolved once: gcc/ is a symlink to ~/dev/c/gcc-16.2.0 and make logs real
+# paths, so prefix-stripping against the symlink never matches. See run_logged.
+GCC_SRC_REAL="$(readlink -f "$GCC_SRC" 2>/dev/null || echo "$GCC_SRC")"
 PKG="$SCRIPT_DIR/gcc-pkg"
 CLEAN=0
 JOBS=""
@@ -79,11 +92,90 @@ lib_resolve() {
     readlink -f "$cand"
 }
 
+# Seconds as 3m12s / 47s. Used only by the progress reporter below.
+_fmt_dur() {
+    local s="$1"
+    if [ "$s" -ge 3600 ]; then printf '%dh%02dm' $((s/3600)) $((s%3600/60))
+    elif [ "$s" -ge 60 ]; then printf '%dm%02ds' $((s/60)) $((s%60))
+    else printf '%ds' "$s"; fi
+}
+
+# How often the progress reporter prints. Overridable because a fast build makes
+# 15s look laggy and a slow one makes 5s a flood.
+PROGRESS_EVERY="${RLOS_PROGRESS_EVERY:-15}"
+
+# run_logged <label> <logfile> <command...>
+#
+# Run a command with its output to a log, printing a progress line while it
+# runs, and return the command's own exit status.
+#
+# WHY THIS EXISTS. A GCC build is 60-90 minutes. Output goes to a log, so without
+# this the terminal shows the "Building..." header and then nothing at all until
+# the end - which is indistinguishable from a hang, and in practice gets killed
+# by someone who assumes it wedged. The reporter prints the most recent
+# "Entering directory" from the log, which is the subtree make is currently in:
+# gcc/cc1, gcc/c-family, libstdcxx-v3 and so on. That plus a clock is enough to
+# tell "working on libstdcxx, 40 minutes in" from "stopped dead".
+#
+# It prints on CHANGE of subtree rather than every tick. make with -j8 bounces
+# between a dozen subdirectories, so an unconditional tick would reprint the same
+# three lines forever and tell the reader nothing.
+run_logged() {
+    local label="$1" log="$2"; shift 2
+    local start elapsed pid rc cur last=""
+    start="$(date +%s)"
+
+    "$@" > "$log" 2>&1 &
+    pid=$!
+
+    while kill -0 "$pid" 2>/dev/null; do
+        sleep "$PROGRESS_EVERY"
+        # Re-test after sleeping: the command may have exited during the sleep,
+        # and kill -0 on a reaped pid is not reliable enough to skip the wait.
+        kill -0 "$pid" 2>/dev/null || break
+        elapsed=$(( $(date +%s) - start ))
+        # make prints:  make[1]: Entering directory '/path/to/gcc-16.2.0/gcc/cc1'
+        # Take the LAST quoted path on the line - parallel make interleaves its
+        # output with sub-configures, so a line can carry several, and the most
+        # recent one is the one that matters. Anchoring the closing quote at the
+        # end of line does not work for exactly that reason.
+        cur="$(grep -ao "Entering directory '[^']*'" "$log" 2>/dev/null | tail -1 |
+               sed "s|.*Entering directory '||; s|'$||")"
+        # Strip against the RESOLVED tree, not $GCC_SRC. gcc here is a symlink to
+        # ~/dev/c/gcc-16.2.0 and make logs the real path, so stripping the
+        # symlink's own prefix silently matched nothing and printed
+        #   home/crimson/dev/c/gcc-16.2.0/...
+        # with the leading slash removed and no explanation.
+        cur="${cur#"$GCC_SRC_REAL"}"
+        cur="${cur#/}"
+        # An exact match - make's own top-level directory, with no trailing
+        # component - strips to the empty string; name it rather than print
+        # "building " with nothing after it.
+        [ -n "$cur" ] || cur="top level"
+        if [ "$cur" != "$last" ]; then
+            printf '  %s%s%s %s%s (%s)%s\n' \
+                "$C_CYAN" "$(nest 1)" "$label" "$C_RESET" "building $cur" \
+                "$(_fmt_dur "$elapsed")" >&2
+            last="$cur"
+        fi
+    done
+
+    # set +e around the wait: `wait` returning non-zero under `set -e` would
+    # abort this function before the caller's own error message could run, and
+    # the caller needs to print the log tail - which is the entire reason a
+    # build failed.
+    set +e
+    wait "$pid"
+    rc=$?
+    set -e
+    return "$rc"
+}
+
 usage() {
   printf "\n"
   printf "${C_BOLD}Usage:${C_RESET} ${C_CYAN}build_gcc.sh${C_RESET} [OPTIONS]\n"
   printf "\n"
-  printf "Build GCC C-only+LTO (%s) into guest-root ${C_BOLD}gcc-dist/${C_RESET}.\n" "${GCC_PIN:0:12}"
+  printf "Build GCC C+C++-runtime+LTO (%s) into guest-root ${C_BOLD}gcc-dist/${C_RESET}.\n" "${GCC_PIN:0:12}"
   printf "\n"
   printf "${C_BOLD}Options:${C_RESET}\n"
   printf "  ${C_YELLOW}-j, --jobs${C_RESET} ${C_CYAN}N${C_RESET}       Number of parallel jobs\n"
@@ -106,6 +198,20 @@ done
 JOBS_FLAG=""
 if [ -n "$JOBS" ]; then
   JOBS_FLAG="-j $JOBS"
+else
+  # "auto" has to mean auto. Without this, omitting -j left JOBS_FLAG empty and
+  # make ran SERIALLY - which was survivable when the build was cc1 alone, and is
+  # not survivable now that enabling C++ adds cc1plus and libstdc++ on top. The
+  # header printed "jobs: auto" the whole time, so the script had been promising
+  # something it was not doing.
+  #
+  # One below nproc: the last job is usually a serial stage (link, or the
+  # libstdc++ bootstrap) where the extra slot just sits idle, and oversubscribing
+  # a build this memory-hungry invites the OOM killer rather than a speedup.
+  JOBS_DETECTED="$(nproc 2>/dev/null || echo 4)"
+  [ "$JOBS_DETECTED" -ge 2 ] || JOBS_DETECTED=2
+  [ "$JOBS_DETECTED" -gt 1 ] && JOBS_DETECTED=$((JOBS_DETECTED - 1))
+  JOBS_FLAG="-j $JOBS_DETECTED"
 fi
 
 for tool in gcc make; do
@@ -189,39 +295,209 @@ if [ "$REUSE" = "1" ]; then
     header "Reusing existing gcc-pkg (--reuse: configure and make skipped)"
     info "staging and verification still run in full - only the build is skipped"
 else
-header "Configuring gcc (C only, LTO enabled)"
-info "./configure --enable-languages=c --enable-lto --without-isl ..."
-( cd "$GCC_SRC" && make distclean > /dev/null 2>&1 || true
-  ./configure --prefix=/usr \
-    --enable-languages=c \
-    --enable-lto \
-    --disable-bootstrap \
-    --disable-multilib \
-    --disable-nls \
-    --disable-libstdcxx \
-    --disable-libgomp \
-    --disable-libquadmath \
-    --disable-libsanitizer \
-    --disable-libvtv \
-    --disable-libmpx \
-    --disable-libstdcxx-pch \
-    --without-isl \
-    --with-gmp=/usr \
-    --with-mpfr=/usr \
-    --with-mpc=/usr > "$SCRIPT_DIR/.gcc-conf.log" 2>&1 && \
-  make $JOBS_FLAG all-gcc all-target-libgcc all-target-libatomic > "$SCRIPT_DIR/.gcc-build.log" 2>&1 && \
-  rm -rf "$PKG" && \
-  make install-gcc install-target-libgcc install-target-libatomic DESTDIR="$PKG" >> "$SCRIPT_DIR/.gcc-build.log" 2>&1 ) || {
-    fail "gcc build failed - tail of .gcc-build.log:"
-    tail -30 "$SCRIPT_DIR/.gcc-build.log" 2>/dev/null | sed 's/^/         /'
-    fail "configure tail:"
-    tail -20 "$SCRIPT_DIR/.gcc-conf.log" 2>/dev/null | sed 's/^/         /'
-    exit 1
-  }
+header "Configuring gcc (C + C++ target libs, LTO enabled)"
+info "./configure --enable-languages=c,c++ --enable-lto --without-isl ..."
+# Split into three separately-reported phases rather than one && chain.
+  #
+  # The phases are reported apart because they fail for unrelated reasons and the
+  # fix is different in each: a configure failure is a missing host library or a
+  # bad flag, a make failure is a compile error, and an install failure is a
+  # permissions or prefix problem. As one && chain all three produced the same
+  # "gcc build failed" and one log tail, and the tail was always from whichever
+  # phase happened to run last.
+  #
+  # Each phase also gets its own progress reporter, because they are wildly
+  # unequal: distclean and configure are tens of minutes of near-silence, make is
+  # the bulk of the work, install is short.
+
+  # Best-effort, and that is not an accident. The original was
+  #
+  #   ( cd "$GCC_SRC" && make distclean > /dev/null 2>&1 || true
+  #
+  # with the failure deliberately swallowed, and making it fatal broke the
+  # script on exactly the state it was written to tolerate: a tree that is not
+  # configured yet, or was left half-configured by an interrupted run, has no
+  # distclean target at all.
+  #
+  #     make: *** No rule to make target 'distclean'.  Stop.
+  #
+  # Nothing is configured at that point, so there is nothing to clean and nothing
+  # to complain about. Configure overwrites whatever state it found.
+  #
+  # Only a tree with a real Makefile is cleaned, and a genuine failure there is
+  # worth a warning because a stale tree DOES cause confusing build errors
+  # later - but it is not this step's job to stop for it.
+  if [ -f "$GCC_SRC/Makefile" ]; then
+      step "distcleaning the gcc tree (this is slow - the tree is ~2GB)"
+      run_logged "distclean" "$SCRIPT_DIR/.gcc-distclean.log" \
+          make -C "$GCC_SRC" distclean \
+      || warn "distclean failed; continuing. A stale tree can cause odd build"
+      ok "tree is clean"
+  else
+      info "tree is not configured - nothing to distclean"
+  fi
+
+  # WHY THE SUBSHELL IS NOT OPTIONAL.
+  #
+  # This used to be:
+  #
+  #   ( cd "$GCC_SRC" && ./configure ... > log 2>&1 && make ... )
+  #
+  # and rewriting it as bare commands broke it silently. configure writes
+  # ./config.status and ./Makefile into the CURRENT DIRECTORY, so dropping the
+  # subshell meant it configured the rlos repository instead of the gcc tree:
+  # the log said "config.status: creating Makefile", the run took ten seconds
+  # instead of fifteen minutes, and it left a 645KB Makefile plus config.status
+  # and config.log in the repo root. The next make then failed with
+  # "No rule to make target 'all-gcc'" - in the gcc tree, which had never been
+  # configured at all.
+  #
+  # Nothing about that failure said "you ran configure in the wrong directory",
+  # which is what made it worth this comment. Every phase below is a subshell
+  # that cds first, so this cannot recur by the same route.
+  step "configure: --enable-languages=c,c++ --enable-lto --without-isl"
+  ( cd "$GCC_SRC" && \
+    ./configure --prefix=/usr \
+      --enable-languages=c,c++ \
+      --enable-lto \
+      --disable-bootstrap \
+      --disable-multilib \
+      --disable-nls \
+      --disable-libgomp \
+      --disable-libquadmath \
+      --disable-libsanitizer \
+      --disable-libvtv \
+      --disable-libmpx \
+      --disable-libstdcxx-pch \
+      --without-isl \
+      --with-gmp=/usr \
+      --with-mpfr=/usr \
+      --with-mpc=/usr ) > "$SCRIPT_DIR/.gcc-conf.log" 2>&1 \
+  || { fail "configure failed - tail of .gcc-conf.log:"
+       tail -30 "$SCRIPT_DIR/.gcc-conf.log" 2>/dev/null | sed 's/^/         /'
+       exit 1; }
+  # Assert configure actually produced a Makefile rather than trusting its exit
+  # status. The failure above was invisible to $? - configure SUCCEEDED, in the
+  # wrong place - and the only evidence was a ten-second runtime.
+  [[ -f "$GCC_SRC/Makefile" ]] \
+    || fail "configure exited 0 but wrote no Makefile in $GCC_SRC (looked in the current directory instead?)"
+  ok "configured"
+
+  # EACH TARGET LIBRARY IS A SEPARATE MAKE INVOCATION. Three rounds of wrong
+  # reasoning got here, so the reasoning is recorded.
+  #
+  # 1. All four goals in one make looked equivalent to the X11-era build. Wrong:
+  #    make may satisfy them in any order, and at -j7 it raced.
+  # 2. The aggregate `all-target` looked like the fix. Wrong too: its per-library
+  #    dependency chain orders each library's BUILD after the previous one's, but
+  #    NOT their configure. Makefile:18197 says it plainly:
+  #
+  #      configure-target-libstdc++-v3: maybe-all-gcc
+  #
+  #    libstdc++'s configure depends on all-gcc and nothing else. It never waits
+  #    for libatomic.
+  # 3. Lowering -j would narrow the window but not close it.
+  #
+  # The actual dependency is real and unavoidable. GCC's link spec emits
+  # -latomic_asneeded on EVERY link, regardless of whether the program uses
+  # atomics (libatomic/Makefile.in:939 is what creates that library). libstdc++'s
+  # configure does link tests through xgcc, so it needs libatomic's build output
+  # to already exist. Give it a libstdc++ that cannot link and configure says:
+  #
+  #      configure: error: Link tests are not allowed after GCC_NO_EXECUTABLES.
+  #
+  # which it records in the shared Makefile, poisoning every later library too.
+  #
+  # So: one make per library, in order, each one completing before the next
+  # starts. The parallelism is retained WITHIN each library, which is where the
+  # time actually goes; only the library boundaries are serialised.
+  #
+  # This is the same structure build_gcc.sh's own libatomic staging comment
+  # describes for the guest - it is a property of gcc's spec, not of this image.
+
+  step "make all-gcc ($JOBS_FLAG) - the compiler proper, including cc1plus"
+  run_logged "all-gcc" "$SCRIPT_DIR/.gcc-build.log" \
+      make -C "$GCC_SRC" $JOBS_FLAG all-gcc \
+  || { fail "make all-gcc failed - tail of .gcc-build.log:"
+       tail -30 "$SCRIPT_DIR/.gcc-build.log" 2>/dev/null | sed 's/^/         /'
+       exit 1; }
+  ok "all-gcc built"
+
+  # Separate log per library. "libstdc++ cannot link" and "libgcc had a compile
+  # error" need completely different fixes, and one shared log only ever shows
+  # whichever finished last - which during the failure above was libgcc's
+  # harmless selftest noise, not the configure error 200 lines earlier.
+  for _wl_lib in libgcc libatomic 'libstdc++-v3'; do
+      step "make all-target-$_wl_lib ($JOBS_FLAG)"
+      run_logged "all-target-$_wl_lib" "$SCRIPT_DIR/.gcc-$(echo "$_wl_lib" | tr -d '+').log" \
+          make -C "$GCC_SRC" $JOBS_FLAG "all-target-$_wl_lib" \
+      || { fail "make all-target-$_wl_lib failed - tail of its log:"
+           tail -30 "$SCRIPT_DIR/.gcc-$(echo "$_wl_lib" | tr -d '+').log" 2>/dev/null |
+               sed 's/^/         /'
+           exit 1; }
+      ok "all-target-$_wl_lib built"
+
+      # After libatomic, move its AS_NEEDED linker script into gcc_objdir.
+      #
+      # Without this, libstdc++'s configure cannot link anything and the build
+      # dies with a message that names neither the cause nor the file:
+      #
+      #   ld: cannot find -latomic_asneeded: No such file or directory
+      #   configure: error: Link tests are not allowed after GCC_NO_EXECUTABLES.
+      #
+      # gcc's spec emits -latomic_asneeded on EVERY link whether or not the
+      # program uses atomics, so xgcc cannot link a trivial "int main(){}" until
+      # that script exists. libatomic's own build creates it - but into the
+      # SOURCE tree's gcc/ directory, not the build tree's:
+      #
+      #   cd `pwd`/../../gcc/ || exit 1;        # libatomic/Makefile.in:935
+      #
+      # With pwd = host-x86_64-pc-linux-gnu/libatomic that resolves to
+      # <tree>/gcc/ - a source directory - while xgcc's -B path is
+      # host-x86_64-pc-linux-gnu/gcc/. libgcc does not have this problem: its
+      # install-leaf rule passes DESTDIR=../../host-.../gcc explicitly, and
+      # libgcc_s_asneeded.so does land in the right place.
+      #
+      # So copy it across. The .a has to come too, because libatomic_asneeded.a
+      # is a symlink to libatomic.a and a dangling link is no better than a
+      # missing one.
+      if [ "$_wl_lib" = "libatomic" ]; then
+          _wl_gccobj="$GCC_SRC_REAL/host-$TRIPLET/gcc"
+          for _f in libatomic_asneeded.so libatomic_asneeded.a libatomic.a libatomic.so; do
+              if [ -e "$GCC_SRC_REAL/gcc/$_f" ] && [ ! -e "$_wl_gccobj/$_f" ]; then
+                  cp -f "$GCC_SRC_REAL/gcc/$_f" "$_wl_gccobj/" 2>/dev/null || true
+              fi
+          done
+          [ -e "$_wl_gccobj/libatomic_asneeded.so" ] \
+            || warn "libatomic_asneeded.so not placed in gcc_objdir; libstdc++ may fail to configure"
+          ok "libatomic_asneeded.so -> host-$TRIPLET/gcc (xgcc's -B path)"
+      fi
+  done
+
+rm -rf "$PKG"
+step "install-gcc + libgcc + libatomic + libstdc++ into \$PKG"
+# Install exactly the libraries that were BUILT, not the `install-target`
+# aggregate. The aggregate covers every target library GCC knows about - libssp,
+# libitm, libgomp, libquadmath, libgfortran and more - and this build never
+# produced any of them, so it fails on the first one it reaches:
+#
+#   /bin/sh: line 4: cd: x86_64-pc-linux-gnu/libssp: No such file or directory
+#   make: *** [Makefile:13484: install-target-libssp] Error 1
+#
+# after successfully installing libstdc++, so the log ends on a failure for a
+# library nobody asked for and that the guest will never contain. Naming the
+# three explicitly keeps the install and the build in agreement.
+run_logged "install" "$SCRIPT_DIR/.gcc-install.log" \
+    make -C "$GCC_SRC" install-gcc \
+      install-target-libgcc install-target-libatomic \
+      'install-target-libstdc++-v3' "DESTDIR=$PKG" \
+  || { fail "gcc install failed - tail of .gcc-install.log:"
+       tail -30 "$SCRIPT_DIR/.gcc-install.log" 2>/dev/null | sed 's/^/         /'
+       exit 1; }
 ok "gcc $GCC_VER built and staged to gcc-pkg/"
 fi
 
-# ---- assemble ----
+  # ---- assemble ----
 header "Assembling guest tree"
 rm -rf "$GCC_DIST"
 mkdir -p "$GCC_DIST/bin"
@@ -326,6 +602,44 @@ cp -f "$LIBGCC_S_SRC" "$GCC_DIST/usr/lib64/libgcc_s.so.1"
 # "cannot find -lgcc_s" while libgcc_s.so.1 sits right there unused.
 ln -sf libgcc_s.so.1 "$GCC_DIST/usr/lib64/libgcc_s.so"
 ok "libgcc_s.so -> libgcc_s.so.1 (from this gcc, $(du -h "$LIBGCC_S_SRC" | cut -f1))"
+
+  # libstdc++.so.6, for the same reason and with the same rule: THIS gcc's copy,
+  # never the host's.
+  #
+  # Mesa's libgallium-26.2.4.so has libstdc++.so.6 in DT_NEEDED, and both
+  # libEGL.so.1 and libGLESv2.so.2 pull libgallium in, so without this the
+  # Wayland backend loads wlroots fine and then fails the moment anything touches
+  # EGL:
+  #   sway: error while loading shared libraries: libstdc++.so.6
+  #
+  # Staging the host's copy would be worse than useless - a libstdc++ built by a
+  # different compiler than the one that built libgcc_s next to it is exactly the
+  # version skew that turns into a runtime crash rather than a link error.
+  #
+  # Same discovery dance as libgcc_s above: install-target-libstdc++-v3 puts the
+  # library under libdir, not next to libgcc.a.
+  LIBSTDCXX_SRC=""
+  for cand in "$PKG/usr/lib64/libstdc++.so.6.0.*" "$PKG/usr/lib/libstdc++.so.6.0.*" \
+             "$PKG/$LIBGCC_REL/libstdc++.so" "$PKG/usr/lib64/libstdc++.so"; do
+      if [[ -f "$cand" ]]; then
+          LIBSTDCXX_SRC="$cand"
+          break
+      fi
+  done
+  if [[ -z "$LIBSTDCXX_SRC" ]]; then
+      fail "libstdc++.so.6 not found - install-target-libstdc++-v3 did not produce it"
+      fail "looked for libstdc++.so.6.0.* under usr/lib64, usr/lib and $LIBGCC_REL"
+      fail "everything staged under pkg:"
+      find "$PKG" -name 'libstdc++*' 2>/dev/null | sed 's/^/         /'
+      exit 1
+  fi
+  cp -f "$LIBSTDCXX_SRC" "$GCC_DIST/usr/lib64/libstdc++.so.6"
+  # The unversioned name is what a linker reaches for when something asks for
+  # -lstdc++; without it the link fails with "cannot find -lstdc++" while the
+  # real library sits right there. Same reasoning as the libgcc_s.so symlink
+  # directly above.
+  ln -sf libstdc++.so.6 "$GCC_DIST/usr/lib64/libstdc++.so"
+  ok "libstdc++.so -> libstdc++.so.6 (from this gcc, $(du -h "$LIBSTDCXX_SRC" | cut -f1))"
 
 # The *asneeded variants. gcc's link spec passes these by name, so the file
 # has to exist under exactly that name or ld fails with

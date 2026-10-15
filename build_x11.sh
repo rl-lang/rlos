@@ -1196,53 +1196,16 @@ done
 # fontconfig maps monospace -> the shipped TTF, so i3bar (and any other client
 # that asks fontconfig for a default) picks it up without naming the family in
 # three places. mlterm's own font is named explicitly in usr/etc/mlterm/aafont.
-cat > "$X11_DIST/usr/share/rlos/fonts.conf" << 'FCEOF'
-<?xml version="1.0"?>
-<!DOCTYPE fontconfig SYSTEM "fonts.dtd">
-<fontconfig>
-  <dir>/usr/share/fonts</dir>
-  <cachedir>/tmp/fccache</cachedir>
-  <match target="pattern">
-    <test name="family"><string>monospace</string></test>
-    <edit name="family" mode="prepend" binding="strong">
-      <string>JetBrainsMono Nerd Font Mono</string>
-    </edit>
-  </match>
-  <match target="pattern">
-    <test name="family"><string>fixed</string></test>
-    <edit name="family" mode="prepend" binding="strong">
-      <string>JetBrainsMono Nerd Font Mono</string>
-    </edit>
-  </match>
-  <match target="pattern">
-    <test name="family"><string>sans-serif</string></test>
-    <edit name="family" mode="prepend" binding="strong">
-      <string>JetBrainsMono Nerd Font Mono</string>
-    </edit>
-  </match>
-  <!-- st asks for "JetBrainsMono Nerd Font Mono", which is the font's
-       *typographic* family (name ID 16). Its legacy family (name ID 1) is
-       "JetBrainsMono NFM", and which of the two fontconfig indexes depends on
-       its version - so with no alias the request simply fails to match and st
-       exits with "can't open font ...". Bind the two names together and it
-       resolves either way. -->
-  <alias binding="same">
-    <family>JetBrainsMono Nerd Font Mono</family>
-    <accept><family>JetBrainsMono NFM</family></accept>
-  </alias>
-  <alias binding="same">
-    <family>JetBrainsMono NFM</family>
-    <accept><family>JetBrainsMono Nerd Font Mono</family></accept>
-  </alias>
-  <match target="font">
-    <edit name="antialias" mode="assign"><bool>true</bool></edit>
-    <edit name="hinting" mode="assign"><bool>true</bool></edit>
-    <edit name="hintstyle" mode="assign"><const>hintslight</const></edit>
-    <edit name="rgba" mode="assign"><const>rgb</const></edit>
-    <edit name="lcdfilter" mode="assign"><const>lcddefault</const></edit>
-  </match>
-</fontconfig>
-FCEOF
+# The fontconfig configuration is a shared asset, not an X11 one.
+#
+# It was generated inline here until the Wayland backend needed it too: foot
+# resolves faces through fontconfig at startup, and a terminal that cannot find a
+# default face renders boxes or refuses to start. Two copies of a 45-line font
+# config would drift, so both build_x11.sh and build_wl.sh read
+# etc-rlos/fonts.conf, and assemble-rootfs.sh stages it for either backend.
+[[ -f "$SCRIPT_DIR/etc-rlos/fonts.conf" ]] || fail "etc-rlos/fonts.conf missing"
+mkdir -p "$X11_DIST/usr/share/rlos"
+cp -f "$SCRIPT_DIR/etc-rlos/fonts.conf" "$X11_DIST/usr/share/rlos/fonts.conf"
 # Terminfo. mlterm sets TERM in its child from its own termtype config, which
 # the staged usr/etc/mlterm/main pins to mlterm-256color. Unlike Alacritty,
 # mlterm does not probe for an entry and fall back - it simply putenv()s the

@@ -391,8 +391,80 @@ if [[ "$BACKEND" == "x11" ]]; then
       else
           fail "etc-rlos/rlos-clock missing - i3.config's status_command will fail"
       fi
-      substep "X11 installed (config: etc/fonts/fonts.conf, etc/X11/xorg.conf.{ms,fbdev}.base)"
-else
+substep "X11 installed (config: etc/fonts/fonts.conf, etc/X11/xorg.conf.{ms,fbdev}.base)"
+  elif [[ "$BACKEND" == "wayland" ]]; then
+      # The Wayland counterpart of the block above.
+      #
+      # Deliberately not a variation on the -x block: the two stacks share no
+      # configuration format, no helper daemon and no environment. sway is
+      # configured entirely by /etc/sway/config (staged by build_wl.sh), the
+      # fonts are found through the same fontconfig the X11 side uses, and
+      # everything else the compositor needs - a seat, an input stack, libseat -
+      # it starts itself or dlopens.
+      step "installing Wayland stack from wayland-dist/ ($(du -sh "$WAYLAND_DIST" | cut -f1))..."
+      cp -a "$WAYLAND_DIST/." "$TARGET/"
+      chmod 755 "$TARGET"/bin/* 2>/dev/null || true
+
+      # Assert the executables before anything else. Every one of these is named
+      # either by init.c's supervise table or by sway's config, and both of those
+      # fail in the least legible way available when the file is absent: init
+      # reports "exec /bin/sway failed" and sway reports nothing at all.
+      WL_MISSING_BINS=""
+      for b in sway swaybar swaymsg foot swaybg grim; do
+          [[ -x "$TARGET/bin/$b" ]] || WL_MISSING_BINS="$WL_MISSING_BINS $b"
+      done
+      if [[ -n "$WL_MISSING_BINS" ]]; then
+          errmsg "these Wayland executables are not in the image:$WL_MISSING_BINS"
+          echo "  init.c supervises sway and swaybar; sway's config execs foot." >&2
+          echo "  A missing one is a black VT with no explanation." >&2
+          echo "  Rebuild with ./build_wl.sh." >&2
+          exit 1
+      fi
+      substep "6/6 executables staged (sway swaybar swaymsg foot swaybg grim)"
+
+      # sway's config. init execs `sway -c /etc/sway/config`, and without -c
+      # sway falls back to paths under $HOME - which is uid 1000's, not root's -
+      # so this file is the difference between a configured session and sway's
+      # compiled-in defaults.
+      if [[ ! -f "$TARGET/etc/sway/config" ]]; then
+          errmsg "etc/sway/config missing from wayland-dist"
+          echo "  init.c execs 'sway -c /etc/sway/config'; without it sway runs" >&2
+          echo "  on built-in defaults and every binding in this image is ignored." >&2
+          exit 1
+      fi
+      substep "etc/sway/config staged ($(wc -l < "$TARGET/etc/sway/config") lines)"
+
+      # The same fontconfig as the X11 path. foot resolves faces through
+      # fontconfig at startup, and a terminal that cannot find a default face
+      # renders boxes or refuses to start, so this is not optional.
+      #
+      # The mkdir matters: the -x branch gets etc/fonts from its own
+      # `mkdir -p "$TARGET/tmp/.X11-unix" "$TARGET/etc/fonts" ...` line, and this
+      # branch has no such line, so without it the cp fails on a directory that
+      # simply does not exist yet.
+      mkdir -p "$TARGET/etc/fonts"
+      cp -f "$TARGET/usr/share/rlos/fonts.conf" "$TARGET/etc/fonts/fonts.conf"
+      substep "usr/share/rlos/fonts.conf -> etc/fonts/fonts.conf"
+
+      # XDG_RUNTIME_DIR is created by init at boot, not here: it has to be owned
+      # by uid 1000 with mode 0700, and doing that during assembly would bake a
+      # root-owned directory into the image that init would then have to fix up
+      # anyway. Assert only that the parent exists and is world-traversable, so
+      # init's mkdir has somewhere to land.
+      mkdir -p "$TARGET/run/user"
+      chmod 755 "$TARGET/run/user"
+      substep "run/user prepared (init creates 1000 at boot, mode 0700)"
+
+      # xapps-dist is handled above and does NOT require XWayland to be present;
+      # it stages for any non-text backend. Without XWayland those binaries
+      # cannot reach a display, so say so rather than letting the user find out
+      # by launching a file manager that exits immediately.
+      if [[ ! -x "$TARGET/usr/bin/Xwayland" ]]; then
+          warn "-w: XWayland is not built, so the X11 apps (feh, xfiles) have no"
+          warn "    display to connect to. XWayland is stage 5 in build_wl.sh."
+      fi
+      substep "Wayland installed (config: etc/sway/config, fonts, run/user)"
+  else
     substep "text-only image (no -x/-w) - no Xorg, no sway, no i3, no foot"
 fi
 
