@@ -520,6 +520,53 @@ ok "xkbcommon built (commit ${XKBCOMMON_GOT:0:12})"
 # newest libinput sway 1.12 can compile against. wlroots 0.20.2 only asks for
 # >= 1.19.0, so it does not care.
 LIBINPUT_TAG="1.31.3"
+header "lua 5.4.8 (libinput loads it at runtime for its debug tooling)"
+
+# libinput.so.10 has liblua5.4.so.0 in DT_NEEDED. No binary in this image links
+# libinput directly, so nothing else in the chain would have supplied it - and an
+# image that booted straight into
+#
+#   /bin/sway: error while loading shared libraries: liblua5.4.so.0
+#
+# which is exactly what happened. Built here rather than staged from the host
+# like every other library in this script.
+# KNOWN MISSING - see the note in the skip below. Staged off by default so the
+# rest of the chain still builds.
+# NO LUA BUILD IS NEEDED. This stage used to exist because libinput.so.10 had
+# liblua5.4.so.0 in DT_NEEDED and nothing staged it, so sway died on first exec.
+# The real cause was upstream: libinput's 'lua-plugins' option defaults to
+# 'auto', so it linked whatever lua pkg-config found - which, on the build host,
+# was the host's. It is now built with -Dlua-plugins=disabled (see the libinput
+# stage), and no ELF in wayland-dist references lua any more.
+#
+# The build is kept, disabled, because it is the fallback if libinput ever grows
+# another optional dependency with a similar default. Flipping WL_SKIP_LUA to 0
+# builds lua 5.4.8 from source. Note lua's default make target is "generic"
+# (static only) and its "linux" target is what produces the shared library.
+WL_SKIP_LUA=1
+if [ -n "$WL_SKIP_LUA" ]; then
+    skip "lua not needed: libinput is built with -Dlua-plugins=disabled"
+fi
+if [ -z "$WL_SKIP_LUA" ]; then
+pins_fetch "https://www.lua.org/ftp/lua-5.4.8.tar.gz" "$WL_SRC/lua-5.4.8.tar.gz" "lua"
+unpack "$WL_SRC/lua-5.4.8.tar.gz" "$WL_SRC/lua-5.4.8"
+step "make (plain makefile, not autotools)"
+# LUA_USE_LINUX requires -ldl, which sway does not need directly; libinput pulls
+# lua in for its own tools, so the shared library is what has to exist.
+# The target matters: lua's DEFAULT target is "generic", which builds only
+# liblua.a. Nothing links it here, so a static-only build silently produces no
+# shared library at all and need() then fails looking for liblua5.4.so. The
+# "linux" target is the one that builds liblua.so.5.4 alongside it, and it also
+# sets the LUA_USE_LINUX define libinput's side expects.
+( cd "$WL_SRC/lua-5.4.8" && \
+  make -j"$(nproc)" linux MYCFLAGS="-fPIC -O2" \
+       > "$SCRIPT_DIR/.wl-lua.log" 2>&1 && \
+  make install INSTALL_TOP="$WL_PREFIX" >> "$SCRIPT_DIR/.wl-lua.log" 2>&1 ) \
+  || { fail "lua build failed"; tail -20 "$SCRIPT_DIR/.wl-lua.log" | sed 's/^/         /'; exit 1; }
+need liblua5.4.so.0 "lua"
+ok "lua built"
+fi
+
 header "libinput ${LIBINPUT_TAG} (input event handling)"
 [ -d "$WL_SRC/libinput" ] || git_clone "https://gitlab.freedesktop.org/libinput/libinput" "$LIBINPUT_TAG" "$WL_SRC/libinput"
 step "meson + ninja"
@@ -527,10 +574,24 @@ step "meson + ninja"
   meson setup build --prefix="$WL_PREFIX" -Dbuildtype=release \
       -Dtests=false -Ddocumentation=false -Dlibwacom=false \
       -Ddebug-gui=false -Dmtdev=false -Dcoverity=false \
+      -Dlua-plugins=disabled \
       > "$SCRIPT_DIR/.wl-libinput.log" 2>&1 && \
   ninja -C build >> "$SCRIPT_DIR/.wl-libinput.log" 2>&1 && \
   ninja -C build install >> "$SCRIPT_DIR/.wl-libinput.log" 2>&1 ) \
   || { fail "libinput build failed"; tail -25 "$SCRIPT_DIR/.wl-libinput.log" | sed 's/^/         /'; exit 1; }
+# -Dlua-plugins=disabled is load-bearing, and in the OPPOSITE direction from the
+# options above. libinput links liblua5.4 for Lua plugin support, which defaults
+# to 'auto' - "use it if pkg-config finds it". The build host has lua, so the
+# host's copy got linked in and libinput.so.10 ended up with liblua5.4.so.0 in
+# DT_NEEDED. That library was never staged, nothing else in the image needs it,
+# and sway died on its first exec with
+#
+#   /bin/sway: error while loading shared libraries: liblua5.4.so.0
+#
+# Lua plugins drive libinput's recording and event-replay tooling - a developer
+# facility nothing in a compositor image uses. The fix is to NOT link lua, not
+# to carry a Lua runtime for it. This is a separate feature from debug-gui
+# below; both have to be off.
 # -Ddebug-gui=false is load-bearing: without it libinput builds
 # libinput-debug-gui and links it against the HOST's GTK-4, which fails on a
 # version-skewed glib. This image has no GTK and does not want one - the debug GUI
@@ -844,6 +905,38 @@ ok "json-c built (commit ${JSONC_GOT:0:12}, static)"
 # Read before the header prints it: `set -u` makes an unset variable a hard error,
 # and putting the assignment first is the only order that works.
 MESA_VERSION="$(cat "$WL_SRC/mesa/VERSION" 2>/dev/null || echo unknown)"
+header "zstd 1.5.7 (Mesa's shader cache compression)"
+
+# Mesa links libzstd for its on-disk shader cache - src/util/compress.c,
+# consumed by disk_cache.c and disk_cache_os.c. That is NOT the render path, but
+# libgallium-26.2.4.so has libzstd.so.1 in DT_NEEDED unconditionally, so the
+# library has to exist whether or not anything calls it. Without it every GLES2
+# binary failed to load.
+#
+# Not fixed with -Dzstd=disabled: the option is deprecated in 26.2 and the cache
+# is exactly what a real GPU driver wants. This build only has softpipe, so it
+# never populates the cache today - but the guest kernel does carry i915, so if
+# a real driver is ever added the cache becomes live, and a missing zstd would
+# then be a silent performance loss rather than a load failure.
+pins_fetch "https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz" \
+           "$WL_SRC/zstd-1.5.7.tar.gz" "zstd"
+unpack "$WL_SRC/zstd-1.5.7.tar.gz" "$WL_SRC/zstd-1.5.7"
+step "cmake + make"
+# Only the shared library. The zstd, zstdgrep and zstdmt CLI tools, the
+# dictionaries and the test suites are a large part of the package and none of
+# them are reachable from this image.
+( cd "$WL_SRC/zstd-1.5.7" && \
+  cmake -B build -S build/cmake -DCMAKE_INSTALL_PREFIX="$WL_PREFIX" \
+        -DZSTD_BUILD_PROGRAMS=OFF -DZSTD_BUILD_TESTS=OFF \
+        -DZSTD_BUILD_STATIC=OFF -DZSTD_LEGACY_SUPPORT=OFF \
+        -DZSTD_MULTITHREAD_SUPPORT=OFF -DCMAKE_BUILD_TYPE=Release \
+        > "$SCRIPT_DIR/.wl-zstd.log" 2>&1 && \
+  cmake --build build -j"$(nproc)" >> "$SCRIPT_DIR/.wl-zstd.log" 2>&1 && \
+  cmake --install build >> "$SCRIPT_DIR/.wl-zstd.log" 2>&1 ) \
+  || { fail "zstd build failed"; tail -20 "$SCRIPT_DIR/.wl-zstd.log" | sed 's/^/         /'; exit 1; }
+need libzstd.so.1 "zstd"
+ok "zstd built"
+
 header "Mesa ${MESA_VERSION} (EGL + GLES2 + GBM, softpipe software GL)"
 step "meson + ninja"
 # -Dgallium-drivers=softpipe is forced by -Dllvm=disabled rather than chosen for
@@ -1285,7 +1378,22 @@ collect_wl() {
 WL_ELF_DIRS="$WL_DIST/bin"
 [ -d "$WL_DIST/usr/bin" ] && WL_ELF_DIRS="$WL_ELF_DIRS $WL_DIST/usr/bin"
 ALL_WL_ELFS="$(find $WL_ELF_DIRS -type f 2>/dev/null || true)"
-for elf in $ALL_WL_ELFS; do
+
+# The CHECK set also includes every staged library, not just the binaries.
+#
+# A binary's DT_NEEDED names what IT needs; a library's DT_NEEDED names what IT
+# needs, and the two sets are not the same. libinput.so.10 links liblua5.4.so.0,
+# and no binary in this image links libinput directly - so checking the binaries
+# alone never looks at liblua at all. That is not theoretical: it shipped an
+# image whose sway died on the first exec with
+#
+#   /bin/sway: error while loading shared libraries: liblua5.4.so.0
+#
+# while every gate reported OK, because the gate had been asking the wrong
+# question of the wrong set of files. The loader asks it of everything.
+WL_CHECK_ELF="$ALL_WL_ELFS
+$(find "$WL_DIST/usr/lib64" -maxdepth 1 -type f -name '*.so*' 2>/dev/null)"
+for elf in $WL_CHECK_ELF; do
     [ -f "$elf" ] || continue
     collect_wl "$elf"
 done
@@ -1373,7 +1481,7 @@ ok "$N_WL_LIBS shared objects in usr/lib64/ ($(du -sh "$WL_DIST/usr/lib64" | cut
 # The guest has no ld.so.cache, so the loader finds a library by filename in its
 # default dirs. Check DT_NEEDED names against usr/lib64/ directly.
 WL_MISSING=""
-for elf in $ALL_WL_ELFS; do
+for elf in $WL_CHECK_ELF; do
     [ -f "$elf" ] || continue
     for need in $(objdump -p "$elf" 2>/dev/null | sed -n 's/^ *NEEDED *//p'); do
         case "$need" in
@@ -1402,7 +1510,7 @@ ok "every DT_NEEDED of every shipped ELF resolves inside usr/lib64/"
 # could actually supply, so a coincidental libfoo.so.1 in some data blob does
 # not become a false positive.
 WL_DLOPEN_MISSING=""
-for elf in $ALL_WL_ELFS; do
+for elf in $WL_CHECK_ELF; do
     [ -f "$elf" ] || continue
     for need in $(strings -a "$elf" 2>/dev/null |
                   grep -oE 'lib[A-Za-z0-9_.+-]{2,40}\.so(\.[0-9]+)*' |
@@ -1448,7 +1556,7 @@ ok "every dlopen'd library of every shipped ELF resolves inside usr/lib64/"
 # prints the needs table as "File: <lib>" followed by one "Name: <version>" per
 # requirement, so pair them up and check the staged copy defines each node.
 WL_BADVER=""
-for elf in $ALL_WL_ELFS; do
+for elf in $WL_CHECK_ELF; do
     [ -f "$elf" ] || continue
     while read -r vfile vname; do
         [ -n "$vfile" ] && [ -n "$vname" ] || continue
@@ -1475,7 +1583,7 @@ ok "every symbol-version requirement resolves against a staged library"
 # this machine and nowhere else, which is the exact failure mode a from-source
 # reproducible build is supposed to make impossible.
 WL_LEAKED=""
-for elf in $ALL_WL_ELFS; do
+for elf in $WL_CHECK_ELF; do
     [ -f "$elf" ] || continue
     if readelf -d "$elf" 2>/dev/null | grep -qE '(RPATH|RUNPATH).*(/home/|/tmp/|\.build)'; then
         WL_LEAKED="$WL_LEAKED $elf"

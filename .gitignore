@@ -117,3 +117,9 @@ rl_programs/nano/miniaudio.h
 rlos-initramfs/init
 # bwrap image for RLOS Atom
 rlos-atom/atom-rootfs.tar.gz
+
+# GCC build logs. One per library now, so the wildcard covers all of them.
+.gcc-*.log
+# Lua's own build log from build_wl.sh
+.wl-lua.log
+

@@ -304,3 +304,15 @@ foot.repo=https://gitlab.freedesktop.org/foot/foot
 foot.sha=22ea7111
 foot.note=1.27.0-22-g22ea7111
 
+# lua 5.4: libinput.so.10 links it. Nothing else in the Wayland stack does, which
+# is why it is so easy to miss - and why the staging gate now walks libraries'
+# DT_NEEDED, not just binaries'.
+lua.url=https://www.lua.org/ftp/lua-5.4.8.tar.gz
+lua.sha256=4f18ddae154e793e46eeab727c59ef1c0c0c2b744e7b94219710d76f530629ae
+
+# zstd: Mesa's libgallium links it for the on-disk shader cache
+# (src/util/compress.c via disk_cache.c). Not the render path, but an
+# unconditional DT_NEEDED.
+zstd.url=https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz
+zstd.sha256=eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3
+
