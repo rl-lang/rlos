@@ -196,6 +196,60 @@ need() {
 # need() to search bin/ too: need() is used 14 times for shared objects, and
 # letting it silently succeed on a name that happens to exist in bin/ would
 # make a missing library look like it was found.
+# meson_build_guestpaths <name> <srcdir> <log> <datadir|-> <sysconfdir|-> <extra meson opts...>
+#
+# Build a component whose COMPILED-IN data path must be a GUEST path
+# (/usr/share, /etc) rather than a path under this build's prefix, while still
+# landing the artifacts in wl-prefix for the rest of the script to consume.
+#
+# WHY THIS IS NOT JUST -Ddatadir=/usr/share. meson's path division returns the
+# right operand when it is absolute, so -Ddatadir=/usr/share does fix the path
+# the library compiles in - which is the whole point. It also makes the INSTALL
+# path absolute, so meson tries to write to the build host's real /usr/share and
+# dies:
+#
+#   PermissionError: [Errno 13] Permission denied:
+#                   '/usr/share/libinput/10-generic-keyboard.quirks'
+#
+# The fix is prefix=/usr so the install tree matches the compiled-in path, plus
+# DESTDIR to redirect it into a staging directory. The compiled-in string is
+# then the guest's, which is what matters at run time, and nothing is written
+# outside the staging directory.
+#
+# After install, usr/ is merged into the prefix: the libraries belong beside the
+# rest of the closure, and the data is staged to the guest path by the data
+# loop further down (which is already how libinput and xkeyboard-config reach
+# /usr/share).
+meson_build_guestpaths() {
+    local name="$1" dir="$2" log="$3" datadir="$4" sysconfdir="$5"; shift 5
+    local stage="$WL_SRC/.stage-$name"
+    [ -d "$dir" ] || fail "$dir is missing"
+    substep "source: ${dir#"$WL_SRC"/}"
+    rm -rf "$stage"
+    ( cd "$dir" && \
+      meson setup build --prefix=/usr -Dbuildtype=release "$@" \
+          > "$SCRIPT_DIR/$log" 2>&1 && \
+      ninja -C build >> "$SCRIPT_DIR/$log" 2>&1 && \
+      DESTDIR="$stage" meson install -C build >> "$SCRIPT_DIR/$log" 2>&1 ) \
+      || { fail "$name build failed"; tail -25 "$SCRIPT_DIR/$log" | sed 's/^/         /'; exit 1; }
+    # Merge usr/* into the prefix. cp -f rather than mv: the tree is small and a
+    # partially merged stage is easier to diagnose than a half-moved one.
+    for d in lib lib64 bin sbin include share; do
+        [ -d "$stage/usr/$d" ] || continue
+        mkdir -p "$WL_PREFIX/$d"
+        cp -rf "$stage/usr/$d/." "$WL_PREFIX/$d/"
+    done
+    # Record the guest paths the binaries were compiled with, so the final log
+    # says where each library will look rather than leaving it to be discovered.
+    if [ "$datadir" != "-" ]; then
+        info "$name: compiled-in datadir $datadir -> /usr/share"
+    fi
+    if [ "$sysconfdir" != "-" ]; then
+        info "$name: compiled-in sysconfdir $sysconfdir -> /etc"
+    fi
+    rm -rf "$stage"
+}
+
 need_bin() {
     local n="$1" what="$2"
     [ -x "$WL_PREFIX/bin/$n" ] \
@@ -386,7 +440,15 @@ step "autogen + configure + make"
 # is a separate step. That is a two-step that looks like one and is not.
 ( cd "$WL_SRC/eudev-3.2.15" && \
   ./autogen.sh > "$SCRIPT_DIR/.wl-eudev.log" 2>&1 && \
+  # --disable-blkid: udevd otherwise links libblkid.so.1 for filesystem
+  # UUID/label probing. Nothing in a display image needs that, and libblkid is
+  # only shipped by x11-dist, which a -w image does not have (-x and -w are
+  # mutually exclusive), so leaving it enabled produced a udevd that could not
+  # load:
+  #   [FAIL] these shared objects are needed by something we ship but are not
+  #          staged: libblkid.so.1
   ./configure --prefix="$WL_PREFIX" --libdir="$WL_PREFIX/lib64" --disable-manpages \
+      --disable-blkid \
       >> "$SCRIPT_DIR/.wl-eudev.log" 2>&1 && \
   make $JOBS_FLAG >> "$SCRIPT_DIR/.wl-eudev.log" 2>&1 && \
   make install >> "$SCRIPT_DIR/.wl-eudev.log" 2>&1 ) \
@@ -474,6 +536,34 @@ step "cmake + make"
   || { fail "libpng build failed"; tail -20 "$SCRIPT_DIR/.wl-libpng.log" | sed 's/^/         /'; exit 1; }
 need libpng16.so "libpng"
 ok "libpng built"
+
+header "xkeyboard-config (the XKB rules and keymaps xkbcommon compiles)"
+
+# DATA, not a library - and the difference between a working keyboard and a
+# compositor that cannot start a session:
+#
+#   XKB-632 failed to find any default include path
+#   XKB-338 couldn't find file "rules/evdev"
+#
+# xkbcommon links fine and finds its headers; it ships no data of its own.
+# Without this tree sway cannot compile a keymap at all, so every config command
+# touching input fails with an XKB error - which is why `repeat_delay 300` in the
+# config appeared to be about repeat_delay.
+#
+# rules/evdev is GENERATED from rules/*.part, not committed. Cloning does not
+# produce the file sway looks for.
+[ -d "$WL_SRC/xkbcfg" ] || git_clone "https://gitlab.freedesktop.org/xkeyboard-config/xkeyboard-config" "xkeyboard-config-2.45" "$WL_SRC/xkbcfg"
+step "meson (generates rules/evdev from rules/*.part)"
+( cd "$WL_SRC/xkbcfg" && \
+  rm -rf build && \
+  meson setup build --prefix="$WL_PREFIX" -Dxorg-rules-symlinks=false -Dnls=false \
+        > "$SCRIPT_DIR/.wl-xkbcfg.log" 2>&1 && \
+  meson compile -C build >> "$SCRIPT_DIR/.wl-xkbcfg.log" 2>&1 && \
+  meson install -C build >> "$SCRIPT_DIR/.wl-xkbcfg.log" 2>&1 ) \
+  || { fail "xkeyboard-config build failed"; tail -20 "$SCRIPT_DIR/.wl-xkbcfg.log" | sed 's/^/         /'; exit 1; }
+[ -f "$WL_PREFIX/share/X11/xkb/rules/evdev" ] \
+  || fail "rules/evdev was not produced; sway cannot compile any keymap without it"
+ok "xkeyboard-config built (rules/evdev $(wc -c < "$WL_PREFIX/share/X11/xkb/rules/evdev") bytes)"
 
 header "xkbcommon (keyboard/keymap compiler - wlroots and libinput need it)"
 # Built from the tree in wl-src/, pinned by the commit the script asserts below.
@@ -570,15 +660,37 @@ fi
 header "libinput ${LIBINPUT_TAG} (input event handling)"
 [ -d "$WL_SRC/libinput" ] || git_clone "https://gitlab.freedesktop.org/libinput/libinput" "$LIBINPUT_TAG" "$WL_SRC/libinput"
 step "meson + ninja"
-( cd "$WL_SRC/libinput" && \
-  meson setup build --prefix="$WL_PREFIX" -Dbuildtype=release \
-      -Dtests=false -Ddocumentation=false -Dlibwacom=false \
-      -Ddebug-gui=false -Dmtdev=false -Dcoverity=false \
-      -Dlua-plugins=disabled \
-      > "$SCRIPT_DIR/.wl-libinput.log" 2>&1 && \
-  ninja -C build >> "$SCRIPT_DIR/.wl-libinput.log" 2>&1 && \
-  ninja -C build install >> "$SCRIPT_DIR/.wl-libinput.log" 2>&1 ) \
-  || { fail "libinput build failed"; tail -25 "$SCRIPT_DIR/.wl-libinput.log" | sed 's/^/         /'; exit 1; }
+# Remove the previous run's quirks data BEFORE building.
+#
+# This is not tidiness - it was a hard failure. libinput was pinned down from
+# 1.32.0 to 1.31.3 (1.32 added LIBINPUT_CONFIG_SCROLL_CIRCULAR, which sway 1.12
+# cannot compile against), but wl-prefix/share/libinput kept the quirks files
+# from the 1.32 build. Nothing removed them, so the next run staged 1.32-era
+# data next to a 1.31.3 library, and libinput refused to start:
+#
+#   libinput error: Unknown key ModelCircularTouchpad in
+#                   [Panasonic Let's Note CF-SV1 circular trackpad]
+#                   (50-system-panasonic.quirks)
+#   [wlr] [backend/libinput/backend.c:111] libinput initialization failed,
+#                                        no input devices
+#
+# The mismatch was invisible: the data path was correct, the files were present,
+# and every gate passed. libinput treats an unparseable quirk as fatal for the
+# WHOLE backend, so one stale file from a different version takes out input
+# entirely - which is why the compositor aborts rather than degrading.
+#
+# The lesson generalises: wl-prefix/ is not cleaned between runs, so any data
+# directory a build writes into can outlive the version that wrote it.
+rm -rf "$WL_PREFIX/share/libinput"
+
+# Built through meson_build_guestpaths so the quirks directory compiled into
+# libinput.so.10 is /usr/share/libinput rather than $WL_PREFIX/share/libinput.
+meson_build_guestpaths libinput "$WL_SRC/libinput" ".wl-libinput.log" \
+    /usr/share - \
+    -Dtests=false -Ddocumentation=false -Dlibwacom=false \
+    -Ddatadir=/usr/share \
+    -Ddebug-gui=false -Dmtdev=false -Dcoverity=false \
+    -Dlua-plugins=disabled
 # -Dlua-plugins=disabled is load-bearing, and in the OPPOSITE direction from the
 # options above. libinput links liblua5.4 for Lua plugin support, which defaults
 # to 'auto' - "use it if pkg-config finds it". The build host has lua, so the
@@ -592,6 +704,27 @@ step "meson + ninja"
 # facility nothing in a compositor image uses. The fix is to NOT link lua, not
 # to carry a Lua runtime for it. This is a separate feature from debug-gui
 # below; both have to be off.
+# -Ddatadir=/usr/share is the single most load-bearing flag in this whole stage,
+# and it is easy to miss because nothing fails at BUILD time.
+#
+# libinput computes its quirks directory as (meson.build:9)
+#
+#     dir_data = get_option('prefix') / get_option('datadir') / 'libinput'
+#
+# Meson's path division returns the RIGHT operand when it is absolute, so with
+# the default relative 'share' this is $PREFIX/share/libinput - a BUILD path,
+# compiled into libinput.so.10. Staging the data at /usr/share/libinput does not
+# help, because libinput searches only its compiled-in dir plus
+# $XDG_CONFIG_HOME/libinput and $XDG_DATA_HOME/libinput. It does NOT consult
+# XDG_DATA_DIRS. So the only way to put the quirks where libinput will look is
+# to make the compiled-in path BE the guest path:
+#
+#   libinput error: /home/crimson/dev/rl/rlos/wl-prefix/share/libinput:
+#                   failed to find data files
+#   [wlr] [backend/libinput/backend.c:111] libinput initialization failed,
+#                                        no input devices
+#
+# and libinput then refuses to start the backend at all.
 # -Ddebug-gui=false is load-bearing: without it libinput builds
 # libinput-debug-gui and links it against the HOST's GTK-4, which fails on a
 # version-skewed glib. This image has no GTK and does not want one - the debug GUI
@@ -651,6 +784,20 @@ header "libseat 0.9.3 (session management - wlroots REFUSES drm/libinput without
 # PID 1 and there is no session manager to talk to.
 [ -d "$WL_SRC/seatd" ] || git_clone "https://github.com/kennylevinsen/seatd" "0.9.3" "$WL_SRC/seatd"
 step "meson + ninja"
+# -Dlibseat-builtin=enabled is what makes a seat openable at all in this image.
+# libseat picks a backend in order: seatd, logind, builtin, noop
+# (libseat/libseat.c:18). logind is disabled below because there is no systemd,
+# and seatd finds no running daemon, so with the default libseat-builtin=disabled
+# nothing usable remains and sway died with
+#
+#   [wlr] [libseat] No backend was able to open a seat
+#   [wlr] [backend/session/session.c:92] Unable to create seat
+#   [wlr] [backend/backend.c:355] failed to add backend 'drm'
+#
+# The builtin backend opens the device directly with no session manager, which is
+# the honest model for an image that has none. wlroots cannot be built with
+# -Dsession=disabled instead - backend/meson.build:14 rejects that with
+# "Session support is required for the DRM or libinput backends".
 # -Dhardening=false, and this is a genuine conflict rather than a preference.
 #
 # This host's gcc spec already defines _FORTIFY_SOURCE, and meson defines it
@@ -673,7 +820,7 @@ step "meson + ninja"
 # host spec is still applying its own. It only stops it being applied twice.
 ( cd "$WL_SRC/seatd" && \
   meson setup build --prefix="$WL_PREFIX" -Dbuildtype=release \
-      -Dwerror=false -Dlibseat-logind=disabled \
+      -Dwerror=false -Dlibseat-logind=disabled -Dlibseat-builtin=enabled \
       > "$SCRIPT_DIR/.wl-libseat.log" 2>&1 && \
   ninja -C build >> "$SCRIPT_DIR/.wl-libseat.log" 2>&1 && \
   ninja -C build install >> "$SCRIPT_DIR/.wl-libseat.log" 2>&1 ) \
@@ -729,6 +876,43 @@ meson_build() {
       || { fail "$name build failed"; tail -25 "$SCRIPT_DIR/$log" | sed 's/^/         /'; exit 1; }
 }
 
+header "kmod (libkmod - udevd links it)"
+
+# udevd needs libkmod.so.2 to load at all:
+#
+#   /usr/sbin/udevd: error while loading shared libraries: libkmod.so.2
+#     cannot open shared object file
+#
+# Nothing else in the Wayland stack needs it, which is why it was missed - and
+# missing it is silent enough that init reported only "udev database MISSING
+# after 4000 ms" rather than anything about a library. Small, no dependencies
+# beyond libc, builds in seconds.
+# From a checkout rather than a tarball: kernel.org's release tarballs are not
+# reachable from this build host, and the GitHub releases carry no attached
+# archives either - only signed git tags.
+[ -d "$WL_SRC/kmod" ] || git_clone "https://github.com/kmod-project/kmod" "31" "$WL_SRC/kmod"
+step "meson + ninja"
+# No tools, no man pages: nothing here shells out to modprobe, and the image
+# loads what it needs at build time anyway.
+# Option names taken from meson_options.txt: build-tests, docs, manpages, tools,
+# xz, openssl, mbedtls. Two things to get right, both hard errors in meson:
+#   - "tests" and "man"/"html" do not exist; the real names are build-tests and
+#     manpages
+#   - types differ. build-tests, docs, manpages and tools are BOOLEAN and take
+#     false. xz, openssl and mbedtls are feature options and take disabled.
+#     meson enforces both, so getting one wrong aborts configure.
+# Routed through meson_build_guestpaths because kmod writes into /etc/depmod.d,
+# and meson does not create it - the same shape as libinput's /usr/share/libinput
+# failure. prefix=/usr with DESTDIR puts the compiled-in path where the guest
+# expects it and stages the install into the prefix.
+meson_build_guestpaths kmod "$WL_SRC/kmod" ".wl-kmod.log" - /etc \
+    -Dbuild-tests=false -Ddocs=false -Dmanpages=false -Dtools=false \
+    -Dxz=disabled -Dopenssl=disabled -Dmbedtls=disabled \
+    -Dsysconfdir=/etc -Dmoduledir=/usr/lib/modules
+need libkmod.so.2 "kmod"
+ok "kmod built"
+
+
 header "freetype ${FREETYPE_VER} (font rasteriser - cairo and pango need it)"
 pins_fetch "$FREETYPE_URL" "$WL_SRC/freetype-${FREETYPE_VER}.tar.xz" "freetype"
 unpack "$WL_SRC/freetype-${FREETYPE_VER}.tar.xz" "$WL_SRC/freetype-${FREETYPE_VER}"
@@ -755,8 +939,27 @@ header "fontconfig ${FONTCONFIG_VER} (font discovery)"
 pins_fetch "$FONTCONFIG_URL" "$WL_SRC/fontconfig-${FONTCONFIG_VER}.tar.gz" "fontconfig"
 unpack "$WL_SRC/fontconfig-${FONTCONFIG_VER}.tar.gz" "$WL_SRC/fontconfig-${FONTCONFIG_VER}"
 step "meson + ninja"
-meson_build fontconfig "$WL_SRC/fontconfig-${FONTCONFIG_VER}" ".wl-fontconfig.log" \
-    -Ddoc=disabled -Dtests=disabled -Dtools=disabled -Dcache-build=disabled -Dnls=disabled
+# Same reason as libinput: fontconfig compiles in $PREFIX/etc/fonts, so
+# every client that touches text fails with
+#   "Fontconfig error: Cannot load default config file: No such file: (null)"
+# which names no path at all. These two flags put the compiled-in path at /etc.
+meson_build_guestpaths fontconfig "$WL_SRC/fontconfig-${FONTCONFIG_VER}" \
+    ".wl-fontconfig.log" /usr/share /etc \
+    -Ddoc=disabled -Dtests=disabled -Dtools=disabled -Dcache-build=disabled \
+    -Dnls=disabled -Dsysconfdir=/etc -Ddatadir=/usr/share
+# -Dsysconfdir=/etc and -Ddatadir=/usr/share, same reason as libinput's
+# -Ddatadir above: fontconfig computes (meson.build:397)
+#
+#     fc_baseconfigdir = prefix / sysconfdir / 'fonts'
+#
+# so the default is $PREFIX/etc/fonts - a build path compiled into
+# libfontconfig.so.1. In the guest it resolves nowhere and every client that
+# touches text fails at startup with
+#
+#   Fontconfig error: Cannot load default config file: No such file: (null)
+#
+# which names no path at all. The config is staged at etc/fonts/fonts.conf; these
+# two flags are what make the library look there.
 need libfontconfig.so.1 "fontconfig"
 ok "fontconfig built"
 
@@ -1269,10 +1472,14 @@ set $right l
 set $term foot
 
 ### Output
-# A solid colour, not an image. `output * bg ... fill` with a file needs a
-# wallpaper staged into the image; nothing is, so sway's `background` command is
-# the honest way to get a flat backdrop with no extra daemon running.
-background #1c1c1c solid_color
+# A solid colour, not an image. An image would need a wallpaper file staged into
+# the image; none is, and shipping one to fill a background is not worth it.
+#
+# NOTE the command is `output ... bg`, NOT a bare `background`. There is no
+# `background` command in sway 1.12 - commands.c lists only `output` - so
+# `background #1c1c1c solid_color` fails to parse as an unknown command and sway
+# aborts the whole config. The real rule is further down, at the "Output layout"
+# heading; this block exists to say why it is spelled that way.
 
 ### Autostart
 # The session's terminal. sway execs this and keeps it as a child, so it dies
@@ -1329,6 +1536,237 @@ SWAY_CONFIG
 
 # Assert it exists and is not the upstream one we rejected - if a future change
 # ever copies wl-prefix/etc/sway/ back over this, the assertion catches it.
+# udevd and its rules.
+#
+# eudev is built by this script for libinput's benefit - libinput links
+# libudev - but the DAEMON was never staged, so a -w image had no udevd at all
+# and init reported:
+#
+#   init: no udevd - libinput cannot attach any input device
+#
+# libinput needs the udev database, not just libudev: path-seat.c's
+# open_restricted() calls udev_device_new_from_devnum() and polls
+# udev_device_get_is_initialized() 200 times at 10ms before giving up with
+# "udev device never initialized", and it needs the ID_INPUT* tags to decide
+# what a device is. Without a running udevd there is no database, so libinput
+# enumerates zero devices and wlroots drops the backend:
+#
+#   [wlr] [backend/libinput/backend.c:111] libinput initialization failed,
+#                                            no input devices
+#
+# The rules matter as much as the binary. 80-libinput-device-groups.rules is what
+# tags the devices in the first place; the daemon with no rules still leaves every
+# node unclassified, and libinput permanently excludes a device whose entry is
+# not classified at enumeration time.
+#
+# udevd goes to /usr/sbin/udevd because init looks there (init.c:2518); eudev
+# installs it to $prefix/sbin, which is a build path.
+if [ -x "$WL_PREFIX/sbin/udevd" ]; then
+    mkdir -p "$WL_DIST/usr/sbin"
+    cp -f "$WL_PREFIX/sbin/udevd" "$WL_DIST/usr/sbin/udevd"
+    chmod 0755 "$WL_DIST/usr/sbin/udevd"
+    ok "udevd staged at usr/sbin/udevd ($(du -h "$WL_DIST/usr/sbin/udevd" | cut -f1))"
+
+# udevadm is NOT optional alongside udevd.
+#
+# The kernel emits each device's "add" uevent the moment the device appears -
+# long before udevd is running. udevd only processes what it is given, so with
+# nothing to replay it sits idle with an empty database and the devices are never
+# classified. `udevadm trigger` walks /sys and synthesises the events again;
+# `udevadm settle` blocks until the queue drains. init runs both
+# (init.c:2552-2559), exec'ing /usr/bin/udevadm.
+#
+# With udevadm missing, that exec fails silently, the database stays empty, and
+# libinput opens zero devices - which surfaces only as wlroots' count check:
+#
+#   [wlr] [backend/libinput/backend.c:111] libinput initialization failed,
+#                                            no input devices
+#
+# with no libinput error at all, because libinitialised perfectly well. It simply
+# had nothing to enumerate. udevd running and udevd *doing something* are
+# different things.
+WL_UDEVDADM=""
+for _cand in "$WL_PREFIX/usr/bin/udevadm" "$WL_PREFIX/bin/udevadm" \
+             "$WL_PREFIX/usr/sbin/udevadm" "$WL_PREFIX/sbin/udevadm"; do
+    [ -x "$_cand" ] && { WL_UDEVDADM="$_cand"; break; }
+done
+if [ -z "$WL_UDEVDADM" ]; then
+    fail "udevadm not found in the prefix; init execs /usr/bin/udevadm to trigger"
+    echo "  looked in:" >&2
+    for c in "$WL_PREFIX/usr/bin/udevadm" "$WL_PREFIX/bin/udevadm" \
+             "$WL_PREFIX/usr/sbin/udevadm" "$WL_PREFIX/sbin/udevadm"; do
+        printf "    %s %s\n" "$([ -e "$c" ] && echo present || echo missing)" "$c" >&2
+    done
+    echo "  what IS in the prefix's bin/sbin:" >&2
+    find "$WL_PREFIX/bin" "$WL_PREFIX/sbin" -maxdepth 1 -type f 2>/dev/null |
+        sed "s|.*/|    |" | sort | head -20 >&2
+    exit 1
+fi
+mkdir -p "$WL_DIST/usr/bin"
+cp -f "$WL_UDEVDADM" "$WL_DIST/usr/bin/udevadm"
+chmod 0755 "$WL_DIST/usr/bin/udevadm"
+ok "udevadm staged at usr/bin/udevadm ($(du -h "$WL_DIST/usr/bin/udevadm" | cut -f1))"
+else
+    fail "wl-prefix/sbin/udevd missing - eudev did not install it; libinput cannot"
+    echo "  attach any input device without a running udevd." >&2
+    exit 1
+fi
+# Rules go to usr/lib64/udev/rules.d, MERGED from several places.
+#
+# udevd has no --rules-dir option: the search path is compiled in. Building
+# eudev with --libdir=$WL_PREFIX/lib64 points it at
+#   $WL_PREFIX/lib64/udev/rules.d      <- a BUILD path
+#   $WL_PREFIX/etc/udev/rules.d        <- also a build path
+#   /usr/local/lib/udev/rules.d         <- the one real system path
+# and neither of the first two exists in the guest. Meanwhile libinput's meson
+# build hardcodes /usr/lib/udev/rules.d, which udevd does not search.
+#
+# So everything is collected into the one directory udevd will actually read.
+# build_x11.sh takes the same approach, for the same reason.
+WL_UDEV_RULES="$WL_DIST/usr/lib64/udev/rules.d"
+mkdir -p "$WL_UDEV_RULES"
+for from in "$WL_PREFIX/lib64/udev/rules.d" "$WL_PREFIX/lib/udev/rules.d" \
+           "$WL_PREFIX/etc/udev/rules.d"; do
+    [ -d "$from" ] || continue
+    cp -f "$from"/*.rules "$WL_UDEV_RULES"/ 2>/dev/null || true
+done
+# /usr/local/lib/udev/rules.d IS in udevd's compiled-in list, so the rules go
+# there too. Cheap insurance if the lib64 assumption above is ever wrong.
+mkdir -p "$WL_DIST/usr/local/lib/udev/rules.d"
+cp -f "$WL_UDEV_RULES"/*.rules "$WL_DIST/usr/local/lib/udev/rules.d/" 2>/dev/null || true
+
+WL_RULES="$(find "$WL_UDEV_RULES" -name '*.rules' | wc -l | tr -d ' ')"
+[ "$WL_RULES" -gt 20 ] || fail "only $WL_RULES udev rules collected into $WL_UDEV_RULES"
+# 60-input-id.rules is the load-bearing one: it sets ID_INPUT,
+# ID_INPUT_KEYBOARD, ID_INPUT_MOUSE, ID_INPUT_TOUCHPAD and ID_SEAT, which is how
+# libinput tells a keyboard from a mouse from a touchpad. Without it every device
+# looks alike and libinput attaches the wrong things, or none.
+[ -f "$WL_UDEV_RULES/60-input-id.rules" ] \
+    || { fail "60-input-id.rules missing - nothing sets ID_INPUT*, and libinput"; \
+         fail "cannot classify devices without it"; exit 1; }
+[ -f "$WL_UDEV_RULES/80-libinput-device-groups.rules" ] \
+    || { fail "libinput's own rules missing - device groups and fuzz override"; \
+         fail "would be lost"; exit 1; }
+ok "udev rules merged into usr/lib64/udev/rules.d ($WL_RULES files, incl. 60-input-id + libinput)"
+
+# Fonts. The image had NONE, and that is not a cosmetic gap.
+#
+# etc-rlos/fonts.conf (shared with the X11 backend) points fontconfig at
+# /usr/share/fonts, and build_x11.sh populates it from the host's Nerd Fonts.
+# The Wayland dist did not, so a -w image had an empty font directory:
+#
+#   x11-dist/usr/share/fonts    4 entries
+#   wayland-dist/usr/share/fonts    0
+#
+# That breaks the whole text path, not just fonts on screen: sway's status bar is
+# Pango-rendered text through cairo, and a terminal with no default face renders
+# boxes or refuses to start. fontconfig also caches, so an empty directory gives
+# a valid cache saying "no fonts", which is worse than no cache at all.
+#
+# The font list and the host source directory are duplicated from build_x11.sh
+# rather than shared, because the two dists are built by scripts that never
+# import each other. If the font set changes, both lists need updating.
+WL_FONT_FILES="JetBrainsMonoNerdFontMono-Regular.ttf
+JetBrainsMonoNerdFontMono-Bold.ttf
+JetBrainsMonoNerdFontMono-Italic.ttf
+JetBrainsMonoNerdFontMono-BoldItalic.ttf"
+WL_HOST_FONT_DIR="/usr/share/fonts/nerdfonts"
+
+mkdir -p "$WL_DIST/usr/share/fonts"
+WL_FONTS_OK=0
+for f in $WL_FONT_FILES; do
+    if [ -f "$WL_HOST_FONT_DIR/$f" ]; then
+        cp -f "$WL_HOST_FONT_DIR/$f" "$WL_DIST/usr/share/fonts/$f"
+        WL_FONTS_OK=$((WL_FONTS_OK + 1))
+    else
+        fail "host font missing: $WL_HOST_FONT_DIR/$f"
+        echo "  Fonts are vendored from the build host rather than built from" >&2
+        echo "  source. Either install the Nerd Fonts package or point" >&2
+        echo "  WL_HOST_FONT_DIR in build_wl.sh at wherever they live." >&2
+        exit 1
+    fi
+done
+[ "$WL_FONTS_OK" -gt 0 ] || fail "no fonts staged"
+ok "fonts staged: $WL_FONTS_OK TTF(s) in usr/share/fonts"
+
+# Runtime DATA, staged at the GUEST paths, not the prefix paths.
+#
+# Both libraries have the build prefix compiled in as a data search path:
+#
+#   libinput:  .../wl-prefix/share/libinput, .../wl-prefix/etc/libinput/...
+#   xkbcommon: .../wl-prefix/share/X11/xkb
+#
+# Neither exists in the guest, so both fell through to their compiled paths and
+# reported "libinput looks for .../wl-prefix/share/libinput - failed to find data
+# files". Each then falls back to its documented system location -
+# /usr/share/libinput and /usr/share/X11/xkb - which is where the data goes.
+#
+# This is a hole in the staging gate: it checks RPATH and RUNPATH for build
+# paths, which covers CODE. A compiled-in DATA path is invisible to readelf -d,
+# and produced a boot failure no existing gate could see.
+# The pair is <prefix dir under share/>,<guest path under usr/share/>.
+#
+# xkeyboard-config installs its tree at $prefix/share/X11/ - compat, keycodes,
+# rules, symbols, types - NOT at share/X11/xkb/. xkbcommon looks for
+# /usr/share/X11/xkb/rules/evdev, so the whole share/X11 directory has to land
+# INSIDE a new xkb/ level. Copying it to usr/share/X11 put rules/evdev at
+# usr/share/X11/rules/evdev, one level too high, where nothing looks for it.
+# "xkeyboard-config-2" is the real install tree. share/X11/xkb is only a symlink
+# to it, and an ABSOLUTE one - back to the build prefix - so copying share/X11
+# with `cp -r` follows it at build time and stages the data, but leaving the
+# symlink in the dist would carry that build path into the guest. Stage from the
+# real directory so what lands in the image is a plain directory tree.
+for _datadir in "libinput:libinput" "xkeyboard-config-2:X11/xkb"; do
+    _d="${_datadir%%:*}"; _p="${_datadir#*:}"
+    if [ -d "$WL_PREFIX/share/$_d" ]; then
+        mkdir -p "$WL_DIST/usr/share/$_p"
+        cp -rf "$WL_PREFIX/share/$_d/." "$WL_DIST/usr/share/$_p/"
+        ok "data staged: /usr/share/$_p ($(find "$WL_DIST/usr/share/$_p" -type f | wc -l) files)"
+    else
+        warn "wl-prefix/share/$_d missing - nothing staged to /usr/share/$_p"
+    fi
+done
+
+# Gate: the staged quirks must be byte-identical to the pinned libinput source's.
+#
+# libinput treats one unparseable quirk as fatal for the whole backend - not
+# that device, the backend - so a single stale file from a different libinput
+# version removes input entirely and the compositor aborts:
+#
+#   libinput error: Unknown key ModelCircularTouchpad in ... (50-system-panasonic.quirks)
+#   [wlr] libinput initialization failed, no input devices
+#
+# That happened here because wl-prefix/ is not cleaned between runs, so data
+# written by one version of a component outlives a later pin of the same
+# component. Every existing gate passed: the data path was right, the files were
+# present and non-empty. Comparing against the source is the check that was
+# missing, and it is cheap.
+WL_QUIRKS_SRC="$WL_SRC/libinput/quirks"
+if [ -d "$WL_QUIRKS_SRC" ] && [ -d "$WL_DIST/usr/share/libinput" ]; then
+    WL_QUIRKS_DIFF=""
+    for q in "$WL_QUIRKS_SRC"/*.quirks; do
+        [ -f "$q" ] || continue
+        b="$(basename "$q")"
+        if [ ! -f "$WL_DIST/usr/share/libinput/$b" ]; then
+            WL_QUIRKS_DIFF="$WL_QUIRKS_DIFF missing:$b"
+        elif ! cmp -s "$q" "$WL_DIST/usr/share/libinput/$b"; then
+            WL_QUIRKS_DIFF="$WL_QUIRKS_DIFF differs:$b"
+        fi
+    done
+    if [ -n "$WL_QUIRKS_DIFF" ]; then
+        echo "  [FAIL] staged libinput quirks do not match the pinned source:" >&2
+        echo "    $WL_QUIRKS_DIFF" >&2
+        echo "  This means data from a DIFFERENT libinput version is being staged" >&2
+        echo "  beside the current one, and libinput will refuse to start:" >&2
+        echo "  'Unknown key ...' is fatal for the whole backend." >&2
+        fail "delete wl-prefix/share/libinput and rebuild libinput"
+    fi
+    ok "staged quirks match the pinned libinput source ($(ls "$WL_QUIRKS_SRC"/*.quirks | wc -l) files)"
+fi
+
+# The gate has to come after the loop above: it compares what was STAGED
+# against the pinned source, so running it before staging would compare an
+# empty directory and pass trivially.
 [ -s "$WL_DIST/etc/sway/config" ] \
     || fail "sway config was not written to $WL_DIST/etc/sway/config"
 if grep -q "$WL_PREFIX" "$WL_DIST/etc/sway/config"; then
@@ -1377,6 +1815,15 @@ collect_wl() {
 # Point find only at directories that exist.
 WL_ELF_DIRS="$WL_DIST/bin"
 [ -d "$WL_DIST/usr/bin" ] && WL_ELF_DIRS="$WL_ELF_DIRS $WL_DIST/usr/bin"
+# usr/sbin/ is scanned too. udevd lives there, and it was staged without being
+# checked, so its missing libkmod.so.2 dependency reached the image:
+#
+#   /usr/sbin/udevd: error while loading shared libraries: libkmod.so.2
+#
+# and the daemon died silently enough that init only reported "udev database
+# MISSING after 4000 ms". Anything staged is something shipped; everything
+# shipped has to have its dependencies checked.
+[ -d "$WL_DIST/usr/sbin" ] && WL_ELF_DIRS="$WL_ELF_DIRS $WL_DIST/usr/sbin"
 ALL_WL_ELFS="$(find $WL_ELF_DIRS -type f 2>/dev/null || true)"
 
 # The CHECK set also includes every staged library, not just the binaries.

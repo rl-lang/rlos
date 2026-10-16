@@ -226,6 +226,23 @@ fi
 printf 'root:x:0:0:root:/root:/bin/ash\n' > "$TARGET/etc/passwd"
 printf 'user:x:1000:1000:user:/home/user:/bin/ash\n' >> "$TARGET/etc/passwd"
 printf 'root:x:0:\nuser:x:1000:\n' > "$TARGET/etc/group"
+
+# udev resolves the GROUP= in its rules against /etc/group, and complains once
+# per unknown name:
+#
+#   udevd[75]: specified group 'input' unknown
+#   udevd[75]: specified group 'video' unknown
+#   ... (tty dialout kmem input video render audio lp)
+#
+# With those groups absent udev cannot hand a device to the right owner, so every
+# rule that tries is silently a no-op. The node permissions init sets by hand
+# paper over the symptom, but the ownership itself is never applied. GIDs follow
+# the Debian convention, which is what the static /etc/passwd style in this image
+# already assumes.
+for g in 'tty:5' 'lp:7' 'dialout:20' 'kmem:24' 'audio:29' 'video:44' \
+         'input:999' 'render:110'; do
+    printf '%s:x:%s:\n' "${g%%:*}" "${g##*:}" >> "$TARGET/etc/group"
+done
 printf 'root:!:19000:0:99999:7:::\n' > "$TARGET/etc/shadow"
 printf 'user:%s:19000:0:99999:7:::\n' "$USER_PW_HASH" >> "$TARGET/etc/shadow"
 chmod 600 "$TARGET/etc/shadow"

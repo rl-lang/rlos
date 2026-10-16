@@ -695,6 +695,80 @@ run_udevadm(char *argv[])
     waitpid(t, NULL, 0);
 }
 
+/* Make the device nodes the compositor needs readable by uid 1000.
+ *
+ * WHY THIS IS NEEDED AT ALL. The X11 backend runs Xorg as root, so root-only
+ * device nodes are fine there and nothing in init ever had to open them up. The
+ * Wayland backend is the opposite: sway runs as uid 1000 and has to open the DRM
+ * and evdev nodes itself. devtmpfs creates them 0600 root:root, and there is no
+ * udev here applying the 0660 root:input rule plus the ACL that a distribution
+ * would. On hardware that meant:
+ *
+ *   crw------- 1 root root 226,   0 card0
+ *   crw------- 1 root root  13,  64 event0
+ *
+ * so libinput could not open a single input device and wlroots refused the
+ * backend:
+ *
+ *   [wlr] [backend/libinput/backend.c:111] libinput initialization failed,
+ *                                        no input devices
+ *
+ * and init reported only "sway did not create /run/user/1000/wayland-0".
+ *
+ * MODES. The /dev/dri nodes get 0666 because wlroots' DRM backend needs read AND write -
+ * a DRM master takes an exclusive lock. /dev/input/event* gets 0644: libinput
+ * opens evdev read-only, and there is no reason to widen it further.
+ *
+ * This is deliberately a blunt instrument. The tidy answer is a udev rule plus an
+ * input group, which is what a distribution does; here it would mean shipping a
+ * rules file, creating the group, and adding the user to it, to protect a machine
+ * that has exactly one unprivileged account and is the person at the keyboard. */
+static void
+open_nodes_for_user(const char *dirpath, mode_t mode)
+{
+  DIR *d = opendir(dirpath);
+  struct dirent *e;
+  char path[96];
+  int n = 0;
+
+  if (d == NULL)
+    return;
+  while ((e = readdir(d)) != NULL) {
+    struct stat sb;
+    char *q;
+
+    if (e->d_name[0] == '.')
+      continue;
+    q = put_str(path, path + sizeof(path) - 1, dirpath);
+    q = put_str(q, path + sizeof(path) - 1, "/");
+    put_str(q, path + sizeof(path) - 1, e->d_name);
+
+    /* stat, not lstat, and only act on what is really there: chmod on a
+     * symlink follows it, and /dev/input has entries that are not evdev nodes
+     * we care about. */
+    if (stat(path, &sb) != 0 || !S_ISCHR(sb.st_mode))
+      continue;
+    if (chmod(path, mode) == 0)
+      n++;
+  }
+  closedir(d);
+  if (n > 0) {
+    char num[12];
+    num[0] = '\0';
+    *put_dec(num, n) = '\0';
+    /* warn(), not info(): this helper is defined above build-lib.sh's output
+     * helpers are all in scope, and warn is the one available this early. It is
+     * also the right one - the line is here because something was WRONG, and
+     * finding out afterwards that init silently opened the nodes is worse than
+     * one noisy line on every boot. */
+    warn("init: opened ");
+    warn(num);
+    warn(" device node(s) in ");
+    warn(dirpath);
+    warn(" for uid 1000\n");
+  }
+}
+
 /* Count the /dev/input/event* nodes that exist, and how many of them udev has
  * actually classified.
  *
@@ -1140,6 +1214,15 @@ static char *vt_shell_envp[] = {
     "LC_ALL=C.UTF-8",
     "USER=user",
     "LOGNAME=user",
+    /* init creates this 0700 and owned by uid 1000 before either desktop
+     * starts. Without it, running sway by hand from a VT shell dies on
+     * "XDG_RUNTIME_DIR is not set" - which reads as sway being broken when in
+     * fact the shell is incomplete, and that is exactly the moment someone
+     * would go looking in order to reproduce a compositor fault. */
+    "XDG_RUNTIME_DIR=/run/user/1000",
+    /* So swaymsg and friends reach a running compositor instead of failing to
+     * connect. Harmless when no desktop is up: nothing is listening. */
+    "WAYLAND_DISPLAY=wayland-0",
     NULL,
 };
 
@@ -1276,6 +1359,57 @@ static char *x_envp[] = {
      * "tty" is the honest answer - this session comes from a virtual terminal -
      * and claiming "wayland" would send it down a code path looking for a
      * session manager that this image does not have. */
+    "XDG_SESSION_TYPE=tty",
+    "USER=user",
+    "LOGNAME=user",
+    "LANG=C.UTF-8",
+    "LC_ALL=C.UTF-8",
+    NULL,
+  };
+
+  /* sway's OWN environment. Identical to wl_envp except for two entries, and
+   * both differences are load-bearing.
+   *
+   * 1. NO WAYLAND_DISPLAY. This is the bug that stopped the compositor starting
+   *    at all. wlroots inspects its own environment and, finding
+   *    WAYLAND_DISPLAY set, concludes it is a NESTED compositor and tries to
+   *    attach to the "parent" - which does not exist, because this sway is what
+   *    is supposed to create it. It never even attempts the DRM backend:
+   *
+   *      [wlr] [backend/wayland/backend.c:612] Could not connect to remote
+   *             display: No such file or directory
+   *      [sway/server.c:270] Unable to create backend
+   *
+   *    which names neither the device nor the cause. The compositor sets its
+   *    own WAYLAND_DISPLAY for its children; it must not be told one by its
+   *    parent.
+   *
+   * 2. WLR_BACKENDS=drm,libinput, spelled out. wlroots autodetects, and its
+   *    autodetection is what walked into the problem above. Naming the backends
+   *    means the behaviour no longer depends on the environment, which is the
+   *    property that just cost a boot cycle. The X11 branch does the
+   *    equivalent by passing an explicit xorg.conf.
+   *
+   * wl_envp - WITH WAYLAND_DISPLAY - stays correct for clients (swaybar, and
+   * whatever exec's out of sway's own config), which genuinely do need to be
+   * told which display to connect to. One environment cannot be right for both
+   * ends of the same socket. */
+  static char *sway_envp[] = {
+    "HOME=/home/user",
+    "PATH=/bin:/usr/bin:/sbin:/usr/sbin",
+    "SHELL=/bin/ash",
+    "TERM=mlterm-256color",
+    "TERMINFO=/usr/share/terminfo",
+    "TERMINFO_DIRS=/usr/share/terminfo",
+    /* The two differences. Deliberately no WAYLAND_DISPLAY - see above. */
+    "WLR_BACKENDS=drm,libinput",
+    "WLR_LIBINPUT_NO_DEVICES=0",
+    "WLR_RENDERER=pixman",
+    "XDG_RUNTIME_DIR=/run/user/1000",
+    "XDG_DATA_HOME=/home/user/.local/share",
+    "XDG_CONFIG_HOME=/home/user/.config",
+    "XDG_DATA_DIRS=/usr/local/share:/usr/share",
+    "XDG_CONFIG_DIRS=/etc/xdg",
     "XDG_SESSION_TYPE=tty",
     "USER=user",
     "LOGNAME=user",
@@ -2905,6 +3039,27 @@ static void do_shutdown(int mode) {
   if (mount("devpts", "/dev/pts", "devpts", 0, "mode=0620,ptmxmode=0666") != 0)
     warnf("mount", "/dev/pts (devpts)");
 
+  /* /dev/shm, and this one is not optional for a Wayland session.
+   *
+   * wlroots allocates the keyboard keymap through a shared memory file - not
+   * memfd, shm_open() - and it does so before the first client can connect:
+   *
+   *   [wlr] [types/wlr_keyboard.c:222] Failed to allocate shm file for keymap
+   *   (repeated, once per attempt)
+   *
+   * With no tmpfs at /dev/shm there is nothing to open, the keymap never
+   * arrives, and the compositor does not survive it. The X11 backend never
+   * needed this: Xorg uses its own extension transport, not shm.
+   *
+   * Sized explicitly rather than left at the tmpfs default. The kernel defaults
+   * a tmpfs to half of RAM, but wlroots divides this space between the keymap
+   * and every client buffer, and the default on a machine with lots of RAM is
+   * also the one that lets a compositor exhaust it. 256M is comfortably more
+   * than a keymap plus a full-screen buffer, and does not grow with host RAM. */
+  xmkdir("/dev/shm", 01777);
+  if (mount("shm", "/dev/shm", "tmpfs", 0, "mode=1777,size=256m") != 0)
+    warnf("mount", "/dev/shm (tmpfs)");
+
   /* Do NOT mknod /dev/console here. devtmpfs already creates it, pointing
    * at whichever console the kernel chose as primary - the last console=
    * on the cmdline. Forcing (5,1) pinned stdin/stdout/stderr to ttyS0
@@ -3298,11 +3453,29 @@ if (have_xorg)
       pause();
   }
 
+  /* udevd BEFORE either compositor, not inside the X11 branch.
+   *
+   * libinput will not open a single input device without a udev database entry
+   * for it: src/path-seat.c open_restricted() calls udev_device_new_from_devnum()
+   * and then polls udev_device_get_is_initialized() 200 times at 10ms before
+   * giving up with "udev device never initialized". It needs the ID_INPUT,
+   * ID_INPUT_KEYBOARD and friends tags to decide what a device even is, and
+   * those only exist once udevd has classified them.
+   *
+   * With this call inside `if (access("/bin/Xorg", X_OK) == 0)`, a -w image never
+   * ran udevd at all, so libinput opened zero devices and wlroots aborted the
+   * backend - with no message naming udev anywhere:
+   *
+   *   [wlr] [backend/libinput/backend.c:111] libinput initialization failed,
+   *                                            no input devices
+   *
+   * The node permissions were correct, the quirks parsed, the data was in
+   * /usr/share/libinput. All of that was still irrelevant: no database, no
+   * devices. Same underlying requirement as the X11 branch, which is exactly why
+   * it was worth lifting out rather than duplicating. */
+  start_udevd();
+
   if (access("/bin/Xorg", X_OK) == 0) {
-    /* udevd first: libinput refuses to open any device that has no udev
-     * database entry, so it has to be running and settled before Xorg's
-     * input driver enumerates anything. */
-    start_udevd();
     /* Wait for the input stack to stop changing before generating anything from
      * it. The keyboard is ready almost immediately, the touchpad and psmouse
      * probe much later, and libinput permanently excludes any device whose udev
@@ -3497,6 +3670,85 @@ if (have_xorg)
      * a placeholder.
      */
     if (have_sway) {
+      /* What the compositor actually has to work with, printed before it is
+       * started. Without this the only symptom of a missing DRM node is
+       *
+       *   [sway/server.c:270] Unable to create backend
+       *
+       * which names neither the device nor the reason. The X11 branch has an
+       * equivalent report for the same reason.
+       *
+       * The /dev listing is the important half: it distinguishes "the driver
+       * never bound" from "the driver bound and devtmpfs did not create a node",
+       * and those two need completely different fixes. Only the driver's own
+       * presence can be concluded from /sys, which is why have_gpu_driver()
+       * checks the bound driver rather than the existence of /dev/dri/card0 -
+       * DRM_EFIDRM creates that node on its own even when no GPU driver is
+       * bound, so the node's existence proves nothing. */
+      {
+        char drv[64];
+        if (have_gpu_driver(drv, sizeof(drv))) {
+          warn("init: graphics: KMS driver bound is ");
+          warn(drv);
+          warn("\n");
+        } else {
+          warn("init: graphics: no GPU driver bound\n");
+        }
+        if (access("/dev/dri/card0", F_OK) == 0)
+          warn("init: graphics: /dev/dri/card0 present\n");
+        else
+          warn("init: graphics: /dev/dri/card0 ABSENT\n");
+        /* List what devtmpfs actually made. Short and unsorted on purpose: this
+         * is a one-shot diagnostic on a failure path, and pulling in a directory
+         * walk for it would be more machinery than the thing it diagnoses. */
+        {
+          DIR *d = opendir("/dev");
+          struct dirent *e;
+          int shown = 0;
+          if (d) {
+            while ((e = readdir(d)) != NULL) {
+              if (e->d_name[0] == '.')
+                continue;
+              warn("  /dev/");
+              warn(e->d_name);
+              warn("\n");
+              if (++shown >= 24)
+                break;
+            }
+            closedir(d);
+          }
+        }
+      }
+
+      /* Wait for udev to finish classifying devices before sway starts.
+       *
+       * Same reason as the X11 branch calls settle_input_devices(): libinput
+       * PERMANENTLY excludes a device whose udev entry is not yet classified -
+       * the ID_INPUT* tags it needs to decide what a device is are written
+       * asynchronously, and a device missing them at enumeration time is not
+       * reconsidered later. The keyboard is ready almost immediately; the
+       * touchpad and psmouse probe several seconds later.
+       *
+       * On the Wayland side this matters more, not less: there is no later
+       * re-read. Xorg gets input through its own driver which re-probes, whereas
+       * wlroots opens libinput exactly once during backend startup - if the
+       * database is incomplete at that instant, the session simply has no input
+       * for its whole life. */
+      settle_input_devices();
+
+      /* Open the DRM and evdev nodes up to uid 1000 BEFORE sway starts.
+       *
+       * sway runs as the user (as_user=1 below), and devtmpfs creates device
+       * nodes 0600 root:root. Without this, libinput opens no input devices,
+       * wlroots drops the backend, and the only symptom is the generic
+       * "sway did not create ..." message further down. Nothing here is
+       * Wayland-specific in principle - the same 0600 nodes are why a
+       * non-root compositor cannot work - but the X11 path never hit it because
+       * Xorg runs as root. */
+      open_nodes_for_user("/dev/dri", 0666);
+      open_nodes_for_user("/dev/input", 0644);
+      open_nodes_for_user("/dev/hidraw", 0644);
+
       /* XDG_RUNTIME_DIR must exist, be mode 0700, and be owned by uid 1000.
        *
        * The compositor binds its socket inside it and refuses to start if the
@@ -3512,6 +3764,57 @@ if (have_xorg)
        * plain mkdir would fail on a perfectly good directory. */
       mkdir("/run/user", 0755);
       mkdir("/run/user/1000", 0700);
+      /* Clear sockets left behind by a previous failed start.
+       *
+       * wl_display_add_socket_auto() takes the FIRST FREE name, not a fixed
+       * one. A stale wayland-0 therefore makes the next compositor bind
+       * wayland-1 instead - and init waits for wayland-0 specifically, so the
+       * session then fails for a reason that has nothing to do with the failure
+       * that left the socket. Observed on hardware:
+       *
+       *   srwxr-xr-x root root wayland-1
+       *   -rw-r----- root root wayland-1.lock
+       *
+       * and init reporting "sway did not create /run/user/1000/wayland-0" while
+       * the compositor was in fact perfectly healthy under a different name.
+       *
+       * Unlinking only what a compositor creates, and never a directory: a
+       * mistaken pattern here could remove /run/user/1000 itself. */
+      for (int k = 0; k < 2; k++) {
+        const char *pats[2] = { "/run/user/1000/wayland-", "/run/user/1000/sway-ipc." };
+        for (int i = 0; i < 2; i++) {
+          DIR *rd = opendir("/run/user/1000");
+          struct dirent *re;
+          if (!rd) break;
+          while ((re = readdir(rd)) != NULL) {
+            if (re->d_name[0] == '.') continue;
+            if (strncmp(re->d_name, pats[i], strlen(pats[i])) != 0) continue;
+            char sp[128];
+            char *q = put_str(sp, sp + sizeof(sp) - 1, "/run/user/1000/");
+            put_str(q, sp + sizeof(sp) - 1, re->d_name);
+            unlink(sp);
+          }
+          closedir(rd);
+        }
+        break;
+      }
+      /* And the .lock files, which have a different name again. */
+      {
+        DIR *rd = opendir("/run/user/1000");
+        struct dirent *re;
+        if (rd) {
+          while ((re = readdir(rd)) != NULL) {
+            size_t ln = strlen(re->d_name);
+            if (re->d_name[0] == '.') continue;
+            if (ln < 5 || strcmp(re->d_name + ln - 5, ".lock") != 0) continue;
+            char sp[128];
+            char *q = put_str(sp, sp + sizeof(sp) - 1, "/run/user/1000/");
+            put_str(q, sp + sizeof(sp) - 1, re->d_name);
+            unlink(sp);
+          }
+          closedir(rd);
+        }
+      }
       if (chown("/run/user/1000", 1000, 1000) < 0)
         warn("init: could not chown /run/user/1000 - sway will not be able to bind its socket\n");
 
@@ -3544,7 +3847,28 @@ if (have_xorg)
           if (devnull > 2)
             close(devnull);
         }
-        execve("/bin/sway", sway_argv, wl_envp);
+        /* stderr ALSO goes to a file, not only to the console.
+         *
+         * Everything sway and wlroots say goes to stderr. On a VT that is also
+         * the text-mode fallback, so by the time anyone reads it the real error
+         * has scrolled away, and init's own message - "sway did not create
+         * /run/user/1000/wayland-0" - names neither the cause nor the device.
+         * init does not write to /proc/kmsg, so the kernel ring never sees it
+         * either.
+         *
+         * That blind spot cost several rounds: every fix so far (WAYLAND_DISPLAY,
+         * libseat, libinput's compiled-in data path, the 0600 device nodes) was
+         * found by running sway BY HAND, not by reading any log. Console output
+         * is unchanged; the file is what makes the next failure legible. /var is
+         * a tmpfs here, so it costs nothing and lives until reboot. */
+        xmkdir("/var/log", 0755);
+        int slog = open("/var/log/sway.log", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (slog >= 0) {
+          dup2(slog, 2);
+          if (slog > 2)
+            close(slog);
+        }
+        execve("/bin/sway", sway_argv, sway_envp);
         warn("init: exec /bin/sway failed\n");
         _exit(1);
       }
@@ -3560,7 +3884,7 @@ if (have_xorg)
        * start" actually has to mean. */
       if (wait_for_path(WL_SOCKET_PATH, SOCK_WAIT_MS)) {
         supervise(procs, &nprocs, { "sway", "/bin/sway",
-            sway_argv, wl_envp, 1, 1, sw, 0, 0, NULL });
+            sway_argv, sway_envp, 1, 1, sw, 0, 0, NULL });
         use_sway = 1;
         warn("init: Wayland display is up (");
         warn(WL_DISPLAY_NAME);
@@ -3993,6 +4317,31 @@ if (p == 0) {
         procs[i].pid = p;
       }
 
+      /* Written once, at supervise() entry, so that "procs.log is empty" is a
+       * result rather than an absence of evidence. Every death below appends to
+       * this file, so a file that does not exist means the logging never ran -
+       * which is indistinguishable from "nothing died" unless something says
+       * the file works. This line is that something. */
+      {
+        int lfd = open(LOG_DIR "/procs.log",
+                       O_WRONLY | O_CREAT | O_APPEND, 0644);
+        if (lfd >= 0) {
+          char line[256];
+          int n = snprintf(line, sizeof line,
+                           "%ld supervise start, %d children\n",
+                           (long)time(NULL), (int)nprocs);
+          if (n > 0) {
+            ssize_t w = write(lfd, line, (size_t)n);
+            (void)w;
+          }
+          close(lfd);
+        } else {
+          warn("init: cannot open ");
+          warn(LOG_DIR "/procs.log");
+          warn(" - child deaths will not be recorded\n");
+        }
+      }
+
     int status;
     pid_t died = waitpid(-1, &status, 0);
     if (died < 0) {
@@ -4103,6 +4452,43 @@ if (p == 0) {
           warn(wb);
         }
         warn("\n");
+        /* The same report, in a file.
+         *
+         * The console line above is the ONLY record of how a child died, and the
+         * console is where you are not looking when a desktop session drops you
+         * to a text terminal - you are looking at the dead session. Getting the
+         * reason then means rebooting and holding F1 through the whole wait to
+         * reproduce it.
+         *
+         * One appended line per death makes "who died, how, and how often"
+         * answerable after the fact, and the COUNT is the useful part: a single
+         * exit is a config error, a tight loop is a crash or a resource limit,
+         * and the console looks identical for both if you catch only the last
+         * line before it scrolls away. */
+        {
+          int lfd = open(LOG_DIR "/procs.log",
+                         O_WRONLY | O_CREAT | O_APPEND, 0644);
+          if (lfd >= 0) {
+            char line[512];
+            int n = snprintf(line, sizeof line, "%ld %s",
+                             (long)time(NULL), procs[i].name);
+            if (n > 0 && (size_t)n < sizeof line) {
+              if (WIFSIGNALED(status))
+                n += snprintf(line + n, sizeof line - n, " signal %d",
+                              WTERMSIG(status));
+              else if (WIFEXITED(status))
+                n += snprintf(line + n, sizeof line - n, " exit %d",
+                              WEXITSTATUS(status));
+              if (n > 0 && (size_t)n < sizeof line)
+                n += snprintf(line + n, sizeof line - n, "\n");
+              if (n > 0) {
+                ssize_t w = write(lfd, line, (size_t)n);
+                (void)w;
+              }
+            }
+            close(lfd);
+          }
+        }
         procs[i].pid = -1;
         /* Escalate: 2s, 4s, 8s, then 16s for good. A service that is genuinely
          * broken should be quiet about it, while the transient failures that do

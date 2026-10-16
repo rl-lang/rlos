@@ -1463,6 +1463,39 @@ for probe_pair in "yaml.h:yaml" "argon2.h:argon2"; do
     fi
 done
 
+# ---------------------------------------------------------------- locales --
+# gcc-dist carries the libc the guest runs on, so it has to carry that libc's
+# locale data too. Without it, setlocale() has nothing to load:
+#
+#   foot: err: main.c:448: setlocale() failed
+#   foot: err: main.c:505: invalid locale, and failed to find a fallback
+#
+# foot tries C.UTF-8 then en_US.UTF-8 and both miss, because the image ships no
+# /usr/lib/locale at all - gcc-dist is a linker sysroot, not a full glibc install,
+# so nothing ever created one. The host's 223M locale-archive is far too big to
+# ship, so only the two locales anything here asks for are generated. Both this
+# libc and the localedef doing the generating are glibc 2.43, so the on-disk
+# locale format matches what the guest expects.
+if command -v localedef >/dev/null 2>&1; then
+    WLOC="$GCC_DIST/usr/lib/locale"
+    mkdir -p "$WLOC"
+    for loc in C.UTF-8 en_US.UTF-8; do
+        # en_US.UTF-8 shares the UTF-8 charmap; C.UTF-8 is C plus UTF-8 codes.
+        localedef --no-archive -i "${loc%%.*}" -f UTF-8 "$WLOC/$loc" 2>/dev/null \
+            || localedef --no-archive -i C -f UTF-8 "$WLOC/$loc" 2>/dev/null \
+            || fail "localedef could not build $loc"
+        # localedef without --no-archive writes a directory of per-category
+        # files, not a single file, so this has to be a -d test. A -f test here
+        # fails on a perfectly good locale.
+        [ -d "$WLOC/$loc" ] || fail "localedef produced no output for $loc"
+    done
+    ok "locales generated: $(du -sh "$WLOC" | cut -f1) ($(ls "$WLOC" | tr '\n' ' '))"
+else
+    fail "localedef not on PATH - the image would ship without any locale, and"
+    fail "  setlocale() then fails for every process, foot included"
+fi
+
+
 ok "gcc-dist ready ($(du -sh "$GCC_DIST" | cut -f1))"
 info "layout (depth 3):"
 find "$GCC_DIST" -maxdepth 3 -type d | sort | sed 's/^/         /'

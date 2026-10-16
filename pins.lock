@@ -316,3 +316,10 @@ lua.sha256=4f18ddae154e793e46eeab727c59ef1c0c0c2b744e7b94219710d76f530629ae
 zstd.url=https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz
 zstd.sha256=eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3
 
+# kmod: udevd links libkmod.so.2 and cannot start without it. From a checkout -
+# kernel.org's release tarballs and the GitHub release assets were both
+# unreachable from the build host.
+kmod.repo=https://github.com/kmod-project/kmod
+kmod.sha=0e72cc5
+kmod.note=branch 31
+
