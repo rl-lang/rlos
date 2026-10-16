@@ -1430,6 +1430,69 @@ if [ -x "$WL_PREFIX/bin/seatd" ]; then
     cp -f "$WL_PREFIX/bin/seatd" "$WL_DIST/bin/"
 fi
 
+# seatd-launch, and it is the half that matters.
+#
+# Staging seatd alone achieves nothing: a seatd binary that nothing execs is
+# just a file, and libseat picks a backend in the order seatd -> logind ->
+# builtin -> noop (libseat/libseat.c:18). With no daemon bound to
+# /run/seatd.sock and no logind in this image, every lookup falls through to
+# "builtin" - libseat running the seat logic INSIDE the compositor process.
+#
+# seatd-launch is the wrapper that starts the daemon and execs the command
+# with SEATD_SOCK set, so libseat connects to a process that is not sway. That
+# is the arrangement the previous cage/Wayland tree used:
+#
+#   execve("/usr/bin/seatd-launch",
+#          {"/usr/bin/seatd-launch", "--", "/usr/bin/sway", NULL}, ...)
+#
+# Build note: seatd's meson bakes SEATD_INSTALLPATH as an absolute constant
+# derived from the configure prefix (seatd/meson.build:25,36), so a build under
+# wl-prefix produces a seatd-launch that execs the BUILD HOST path
+# (/home/crimson/dev/rl/rlos/wl-prefix/bin/seatd). In the guest that is:
+#
+#   Could not start seatd: No such file or directory
+#   seatd exited prematurely
+#
+# and sway falls back to the builtin backend anyway. The constant is patched to
+# the guest path in the installed binary below, in place and NUL-padded (execve
+# stops at the first NUL, so the padding is inert).
+#
+# Gated, because "missing" and "present but unusable" both surface at runtime
+# as the same silent fallback to libseat's builtin backend.
+if [ ! -x "$WL_PREFIX/bin/seatd-launch" ]; then
+    fail "seatd-launch not built; without it sway runs under libseat's builtin"
+    fail "  seat backend instead of a real seatd daemon"
+fi
+python3 - "$WL_PREFIX/bin/seatd-launch" "$WL_PREFIX/bin/seatd" <<'PY'
+import pathlib, sys
+
+p = pathlib.Path(sys.argv[1])
+old = sys.argv[2].encode()
+new = b"/bin/seatd"
+d = bytearray(p.read_bytes())
+
+# "/bin/seatd" is a substring of the build-host path, so "is it patched?" is
+# decided by the absence of the old value, not the presence of the new one.
+if old not in d:
+    if new + b"\x00" in d:
+        print("seatd-launch already patched")
+        raise SystemExit(0)
+    raise SystemExit("no embedded seatd path found in %s" % p)
+if len(new) > len(old):
+    raise SystemExit("guest path longer than embedded path")
+n = d.count(old)
+if n != 1:
+    raise SystemExit("expected one embedded path, found %d" % n)
+i = d.index(old)
+d[i:i + len(old)] = new + b"\x00" * (len(old) - len(new))
+p.write_bytes(d)
+print("patched SEATD_INSTALLPATH")
+PY
+cp -f "$WL_PREFIX/bin/seatd-launch" "$WL_DIST/bin/"
+strings "$WL_DIST/bin/seatd-launch" | grep -q '^/bin/seatd$' \
+    || { fail "seatd-launch still carries the build-host path"; exit 1; }
+ok "seatd-launch staged at bin/seatd-launch (execs /bin/seatd)"
+
 # sway's config is WRITTEN, not copied.
 #
 # The upstream one that meson installed into wl-prefix/etc/sway/ cannot be used,

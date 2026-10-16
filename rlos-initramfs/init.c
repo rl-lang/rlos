@@ -3868,6 +3868,13 @@ if (have_xorg)
           if (slog > 2)
             close(slog);
         }
+        /* seatd-launch starts the daemon and execs sway with SEATD_SOCK set.
+         * See build_wl.sh for why this changes the teardown behaviour. */
+        char *seatd_argv[] = {
+            "seatd-launch", "--", "/bin/sway", sway_argv[1], NULL
+        };
+        execve("/bin/seatd-launch", seatd_argv, sway_envp);
+        warn("init: seatd-launch exec failed - falling back to bare sway\n");
         execve("/bin/sway", sway_argv, sway_envp);
         warn("init: exec /bin/sway failed\n");
         _exit(1);
