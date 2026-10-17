@@ -80,10 +80,20 @@ add "System"
 command -v btop      > /dev/null 2>&1 && sub "Monitor"     "btop"
 command -v fastfetch > /dev/null 2>&1 && sub "System info" "fastfetch"
 [ -x "$HOME/scripts/atom-shell.sh" ] && sub "Atom container" "$HOME/scripts/atom-shell.sh"
-sub "Login shell" "/bin/ash -l"
-sep
-sub "Reboot"    "reboot"
-sub "Power off" "poweroff"
+  sub "Login shell" "/bin/ash -l"
+  # The screen lock. swaylock is the -w session's locker, i3lock the -x one, and
+  # this script is staged into both - so it is guarded like everything else that
+  # differs by backend. Both authenticate through PAM against /etc/shadow, and
+  # both show the shipped wallpaper so a locked screen is the desktop, dimmed,
+  # rather than a black panel that reads as a crash.
+  if command -v swaylock > /dev/null 2>&1; then
+      sub "Lock screen" "swaylock -f -i /usr/share/rlos/background.png --indicator-idle-visible --show-failed-attempts --font monospace --inside-color 1a1b26e6 --ring-color 7dcfff --key-hl-color 7dcfff --bs-hl-color f38ba8 --text-color a6adc8 --inside-ver-color 1a1b26e6 --ring-ver-color 7dcfff --inside-wrong-color 1a1b26e6 --ring-wrong-color f38ba8"
+  elif command -v i3lock > /dev/null 2>&1; then
+      sub "Lock screen" "i3lock -i /usr/share/rlos/background.png"
+  fi
+  sep
+  sub "Reboot"    "reboot"
+  sub "Power off" "poweroff"
 
 # -p takes a GEOMETRY, not a word: 50%+50% places the centre of the menu at the
 # centre of the screen (the % makes each offset relative to the screen rather

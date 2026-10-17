@@ -19,11 +19,18 @@
 # The chain is giflib -> Imlib2 -> feh, plus xfiles. Imlib2 exists only because
 # both apps are Imlib2 clients.
 #
+# The second group is everything xfilesctl names as helpers: xmessage for its
+# dialogs, xprop for _CONTROL_GOTO, xclip for the clipboard, dmenu as the
+# launcher, and xdg-open (repo source, installed here) as the OPENER both
+# xfiles and xfilesctl exec. libXaw exists only for xmessage.
+#
 # Output:
 #   xapps-dist/usr/bin/feh
 #   xapps-dist/usr/bin/xfiles, xfilesctl, xfilesthumb
+#   xapps-dist/usr/bin/xclip, xprop, dmenu, xmessage
+#   xapps-dist/usr/bin/xdg-open
 #   xapps-dist/usr/lib64/imlib2/loaders/*.so   (dlopen'd; ldd cannot see these)
-#   xapps-dist/usr/lib64/libImlib2.so*, libgif.so*
+#   xapps-dist/usr/lib64/libImlib2.so*, libgif.so*, libXaw.so*
 #   xapps-dist/usr/lib64/ + the ldd closure of all of the above
 #   xapps-dist/usr/share/xfiles/Xresources
 #
@@ -32,8 +39,9 @@
 #   ./build_xapps.sh -j 8       # 8 parallel jobs
 #   ./build_xapps.sh --clean    # remove xapps-src/ xapps-prefix/ xapps-dist/
 #
-# Needs on the host: gcc, make, git, curl, and pkg-config modules
-# x11, xext, xrender, xproto. No meson, no ninja, no fonts, no tic.
+# Needs on the host: gcc, make, git, curl, meson, ninja, autoconf, automake,
+# libtoolize, and pkg-config modules x11, xext, xrender, xproto, xmu, xt.
+# No fonts, no tic.
 
 set -euo pipefail
 
@@ -87,7 +95,8 @@ usage() {
   cat >&2 << EOF
 usage: build_xapps.sh [-j|--jobs N] [--clean]
 
-Builds the X11 GUI applications (feh, xfiles) into xapps-dist/.
+Builds the X11 GUI applications (feh, xfiles, xclip, xprop, dmenu, xmessage)
+into xapps-dist/.
 
   -j, --jobs N   Number of parallel jobs
   --clean        Remove xapps-src/ xapps-prefix/ xapps-dist/
@@ -165,35 +174,62 @@ XPM_URL="http://deb.debian.org/debian/pool/main/libx/libxpm/libxpm_${XPM_VER}.or
 LIBXFT_REPO="https://gitlab.freedesktop.org/xorg/lib/libXft.git"
 LIBXFT_TAG="libXft-2.3.9"
 
+# libXaw: xmessage is an Xt/Xaw client and Xaw is the one piece of that set the
+# host lacks (Xt, Xmu, SM and ICE are host libraries the closure stages like any
+# other). Built here rather than in build_x11.sh because xmessage is used by
+# xfilesctl, which ships with EITHER desktop.
+XAW_VER="1.0.16"
+XAW_URL="https://www.x.org/releases/individual/lib/libXaw-${XAW_VER}.tar.xz"
+XMESSAGE_VER="1.0.7"
+XMESSAGE_URL="https://www.x.org/releases/individual/app/xmessage-${XMESSAGE_VER}.tar.xz"
+
+# xclip and xprop: the clipboard and the property tool xfilesctl names. Both are
+# plain X11 clients (Xlib + Xmu for xclip, Xlib for xprop) that run through
+# XWayland under -w.
+XCLIP_VER="0.13"
+XCLIP_URL="https://github.com/astrand/xclip/archive/refs/tags/${XCLIP_VER}.tar.gz"
+XPROP_VER="1.2.8"
+XPROP_URL="https://www.x.org/releases/individual/app/xprop-${XPROP_VER}.tar.xz"
+
+# dmenu: the classic X11 launcher. xmenu.sh is this desktop's menu, but dmenu is
+# what scripts and muscle memory reach for, and its footprint is one binary plus
+# libraries already staged for libXft.
+DMENU_VER="5.3"
+DMENU_URL="https://dl.suckless.org/tools/dmenu-${DMENU_VER}.tar.gz"
+
 header "Host prerequisites"
 MISSING=""
-# meson and ninja are needed only for libXft.
-for tool in gcc make git curl pkg-config meson ninja; do
+# meson and ninja are needed only for libXft; autoconf/automake/libtoolize only
+# for xclip, whose tag archive has no generated configure (see its section).
+for tool in gcc make git curl pkg-config meson ninja autoconf automake libtoolize; do
   command -v "$tool" > /dev/null 2>&1 || MISSING="$MISSING $tool"
 done
 if [ -n "$MISSING" ]; then
   fail "missing host tools:$MISSING"
   fail "on Gentoo: emerge sys-devel/gcc sys-devel/make dev-vcs/git net/curl"
   fail "                dev-build/meson dev-build/ninja"
+  fail "                sys-devel/autoconf sys-devel/automake sys-devel/libtool"
   exit 1
 fi
-ok "gcc make git curl pkg-config meson ninja present"
+ok "gcc make git curl pkg-config meson ninja autoconf automake libtoolize present"
 
-# Only the X11 modules these apps need. Not the whole XPC_MODS list build_x11.sh
-# wants - no xkbcomp, no xkeyboard-config, neither of which any of these link.
-# freetype2 is here for libXft, which needs its headers.
-XAPPS_PC_MODS="x11 xext xrender xproto freetype2 fontconfig"
-MISSING_PC=""
-for m in $XAPPS_PC_MODS; do
-  pkg-config --exists "$m" 2>/dev/null || MISSING_PC="$MISSING_PC $m"
-done
-if [ -n "$MISSING_PC" ]; then
-  fail "missing pkg-config modules:$MISSING_PC"
-  fail "on Gentoo: emerge x11-libs/libX11 x11-libs/libXext media-libs/libpng"
-  fail "                media-libs/freetype media-libs/fontconfig x11-proto/xorg-proto"
-  exit 1
-fi
-ok "X pkg-config modules present"
+  # Only the X11 modules these apps need. Not the whole XPC_MODS list build_x11.sh
+  # wants - no xkbcomp, no xkeyboard-config, neither of which any of these link.
+  # freetype2 is here for libXft, which needs its headers. xmu and xt are for the
+  # Xaw/Xt clients (xmessage) and for xclip, which uses Xmu's window helpers.
+  XAPPS_PC_MODS="x11 xext xrender xproto freetype2 fontconfig xmu xt"
+  MISSING_PC=""
+  for m in $XAPPS_PC_MODS; do
+    pkg-config --exists "$m" 2>/dev/null || MISSING_PC="$MISSING_PC $m"
+  done
+  if [ -n "$MISSING_PC" ]; then
+    fail "missing pkg-config modules:$MISSING_PC"
+    fail "on Gentoo: emerge x11-libs/libX11 x11-libs/libXext media-libs/libpng"
+    fail "                media-libs/freetype media-libs/fontconfig x11-proto/xorg-proto"
+    fail "                x11-libs/libXmu x11-libs/libXt"
+    exit 1
+  fi
+  ok "X pkg-config modules present"
 
 if [ "$CLEAN" = "1" ]; then
   header "Cleaning"
@@ -425,11 +461,40 @@ XPM_SRC="$XAPPS_SRC/libXpm-${XPM_VER}"
 [ -f "$XPM_SRC/Makefile" ] || { fail "libXpm configure produced no Makefile in $XPM_SRC"; exit 1; }
 run_quiet make -C "$XPM_SRC" -j"$JOBS"
 DESTDIR="$XAPPS_PREFIX" run_quiet make -C "$XPM_SRC" install
-XPM_LIB="$(find "$XAPPS_PREFIX" -name 'libXpm.so*' -type f 2>/dev/null | head -1 || true)"
-[ -n "$XPM_LIB" ] || { fail "libXpm not built - XFiles cannot link"; exit 1; }
-ok "libXpm built ($(du -h "$XPM_LIB" | cut -f1))"
-
-header "XFiles $(pins_get xfiles.sha | cut -c1-12) (file manager, plain Xlib)"
+  XPM_LIB="$(find "$XAPPS_PREFIX" -name 'libXpm.so*' -type f 2>/dev/null | head -1 || true)"
+  [ -n "$XPM_LIB" ] || { fail "libXpm not built - XFiles cannot link"; exit 1; }
+  ok "libXpm built ($(du -h "$XPM_LIB" | cut -f1))"
+  
+  header "libXaw ${XAW_VER} (xmessage's toolkit)"
+  # libXaw is the one piece of xmessage's dependency set the host does not have.
+  # It needs Xt, Xmu, Xext and X11 (host libraries, found through pkg-config) and
+  # Xpm, which is in this prefix - so PKG_CONFIG_PATH has to lead with the prefix
+  # or configure finds the wrong world. --disable-xaw6: nothing links the 1993
+  # Xaw6 API, and --disable-specs/--without-xmlto skip the documentation, which
+  # needs xmlto and the .tex machinery.
+  fetch "$XAW_URL" "$XAPPS_SRC/libXaw-${XAW_VER}.tar.xz" "libXaw"
+  if [ ! -d "$XAPPS_SRC/libXaw-${XAW_VER}" ]; then
+    tar -xf "$XAPPS_SRC/libXaw-${XAW_VER}.tar.xz" -C "$XAPPS_SRC" \
+      || { fail "libXaw did not unpack"; exit 1; }
+  fi
+  XAW_SRC="$XAPPS_SRC/libXaw-${XAW_VER}"
+  ( cd "$XAW_SRC" && \
+    PKG_CONFIG_PATH="$XAPPS_PREFIX/usr/lib64/pkgconfig:${PKG_CONFIG_PATH:-}" \
+    CPPFLAGS="-I$XAPPS_PREFIX/usr/include" \
+    LDFLAGS="-L$XAPPS_PREFIX/usr/lib64" \
+    run_quiet ./configure --prefix=/usr --libdir=/usr/lib64 --disable-static \
+      --disable-xaw6 --disable-specs --without-xmlto )
+  [ -f "$XAW_SRC/Makefile" ] || { fail "libXaw configure produced no Makefile"; exit 1; }
+  run_quiet make -C "$XAW_SRC" -j"$JOBS"
+  DESTDIR="$XAPPS_PREFIX" run_quiet make -C "$XAW_SRC" install
+  # The 1.0.14+ tarball names the real object libXaw7.so.7.0.0 and keeps a
+  # libXaw.so.7 compatibility symlink beside it, so the guard looks for the
+  # file that actually exists, not the historical name.
+  XAW_LIB="$(find "$XAPPS_PREFIX" -name 'libXaw7.so.7*' -type f 2>/dev/null | head -1 || true)"
+  [ -n "$XAW_LIB" ] || { fail "libXaw7.so.7 not built - xmessage cannot link"; exit 1; }
+  ok "libXaw built ($(du -h "$XAW_LIB" | cut -f1))"
+  
+  header "XFiles $(pins_get xfiles.sha | cut -c1-12) (file manager, plain Xlib)"
 # POSIX make with brace expansion, no configure. Its Makefile hardcodes
 # PROG_LDFLAGS as "-lfontconfig -lXft -lX11 -lXext -lXcursor -lXrender -lXpm
 # -lpthread", so the prefix's libraries are found via -L in LDFLAGS and the
@@ -448,8 +513,42 @@ for s in xfilesctl xfilesthumb; do
   [ -f "$XFILES_SRC/examples/$s" ] || { fail "XFiles: examples/$s missing - file operations would not work"; exit 1; }
   install -m 0755 "$XFILES_SRC/examples/$s" "$XAPPS_DIST/usr/bin/$s"
 done
-# The X resource file is what gives it our colours and font instead of its
-# defaults, so it is staged as data rather than left in the source tree.
+# xfilesctl execs xterm for its term() and edit() actions, and this image has
+# no xterm. Point both at the terminal the session actually has - foot under
+# Wayland, mlterm under X11 - by patching the installed script. The upstream
+# pin is fixed in pins.lock, so the anchors cannot drift silently; the guards
+# below turn a miss into a build failure rather than a file manager whose
+# F2/terminal actions exec a binary the image does not contain.
+#
+# -into "$WINDOWID" (XEmbed) is dropped with the rest of the original edit()
+# line: neither foot nor mlterm embeds into an X window, so the editor opens
+# in its own terminal window instead.
+XFILESCTL="$XAPPS_DIST/usr/bin/xfilesctl"
+sed -i \
+    -e '/^EDITOR=/a\
+TERMINAL="${TERMINAL:-$(if [ -n "$WAYLAND_DISPLAY" ] && command -v foot >/dev/null 2>&1; then echo foot; elif command -v mlterm >/dev/null 2>&1; then echo mlterm; else echo xterm; fi)}"' \
+    -e 's|^\txterm &$|\t"$TERMINAL" \&|' \
+    -e 's|^\txterm -into "$WINDOWID" -bw 0 -e "$EDITOR" -- "$@"$|\t"$TERMINAL" -e "$EDITOR" -- "$@"|' \
+    "$XFILESCTL"
+grep -q '^TERMINAL=' "$XFILESCTL" \
+    || { fail "xfilesctl patch: TERMINAL selection did not apply"; exit 1; }
+grep -qF '"$TERMINAL" &' "$XFILESCTL" \
+    && grep -qF '"$TERMINAL" -e "$EDITOR"' "$XFILESCTL" \
+    || { fail "xfilesctl patch: xterm calls were not all replaced"; exit 1; }
+  ok "xfilesctl patched: term()/edit() use foot (Wayland) or mlterm (X11)"
+  # xdg-open, the OPENER every xfiles here execs (xfilesctl line 32, and xfiles
+  # itself for double-click). It ships in THIS dist because the programs that
+  # call it do, and it dispatches against what the same dist contains - feh for
+  # images, xfiles for directories. Single source of truth: etc-rlos/xdg-open,
+  # installed rather than duplicated here.
+  [ -f "$SCRIPT_DIR/etc-rlos/xdg-open" ] \
+    || { fail "etc-rlos/xdg-open missing - xfiles would have no opener"; exit 1; }
+  install -m 0755 "$SCRIPT_DIR/etc-rlos/xdg-open" "$XAPPS_DIST/usr/bin/xdg-open"
+  sh -n "$XAPPS_DIST/usr/bin/xdg-open" \
+    || { fail "xdg-open fails sh -n after install"; exit 1; }
+  ok "xdg-open staged (usr/bin/xdg-open)"
+  # The X resource file is what gives it our colours and font instead of its
+  # defaults, so it is staged as data rather than left in the source tree.
 mkdir -p "$XAPPS_DIST/usr/share/xfiles"
 if [ -f "$XFILES_SRC/examples/Xresources" ]; then
   install -m 0644 "$XFILES_SRC/examples/Xresources" "$XAPPS_DIST/usr/share/xfiles/Xresources"
@@ -491,17 +590,113 @@ if [ -f "$XMENU_SRC/examples/Xresources" ]; then
 else
   warn "xmenu ships no examples/Xresources - it will use its built-in defaults"
 fi
-ok "xmenu staged ($(du -h "$XAPPS_DIST/usr/bin/xmenu" | cut -f1))"
-
-# ---------------------------------------------------------------------------
-header "Staging Imlib2 + its dlopen'd loaders"
+  ok "xmenu staged ($(du -h "$XAPPS_DIST/usr/bin/xmenu" | cut -f1))"
+  
+  header "xmessage ${XMESSAGE_VER} (dialog boxes)"
+  # xfilesctl pops xmessage dialogs (-buttons Yes:0,No:1, -file -) for its
+  # confirmations. The Debian-era clone of xmessage that people remember is
+  # Xt/Xaw, and this is the real x.org client: libXaw from the section above,
+  # Xt/Xmu/X11 from the host, all through pkg-config.
+  fetch "$XMESSAGE_URL" "$XAPPS_SRC/xmessage-${XMESSAGE_VER}.tar.xz" "xmessage"
+  if [ ! -d "$XAPPS_SRC/xmessage-${XMESSAGE_VER}" ]; then
+    tar -xf "$XAPPS_SRC/xmessage-${XMESSAGE_VER}.tar.xz" -C "$XAPPS_SRC" \
+      || { fail "xmessage did not unpack"; exit 1; }
+  fi
+  XMESSAGE_SRC="$XAPPS_SRC/xmessage-${XMESSAGE_VER}"
+  ( cd "$XMESSAGE_SRC" && \
+    PKG_CONFIG_PATH="$XAPPS_PREFIX/usr/lib64/pkgconfig:${PKG_CONFIG_PATH:-}" \
+    CPPFLAGS="-I$XAPPS_PREFIX/usr/include" \
+    LDFLAGS="-L$XAPPS_PREFIX/usr/lib64" \
+    run_quiet ./configure --prefix=/usr )
+  [ -f "$XMESSAGE_SRC/Makefile" ] || { fail "xmessage configure produced no Makefile"; exit 1; }
+  run_quiet make -C "$XMESSAGE_SRC" -j"$JOBS"
+  DESTDIR="$XAPPS_PREFIX" run_quiet make -C "$XMESSAGE_SRC" install
+  [ -x "$XAPPS_PREFIX/usr/bin/xmessage" ] \
+    || { fail "xmessage did not build - xfilesctl's dialogs would not appear"; exit 1; }
+  install -m 0755 "$XAPPS_PREFIX/usr/bin/xmessage" "$XAPPS_DIST/usr/bin/xmessage"
+  ok "xmessage staged ($(du -h "$XAPPS_DIST/usr/bin/xmessage" | cut -f1))"
+  
+  header "xprop ${XPROP_VER} (X property tool)"
+  # xfilesctl uses xprop to set _CONTROL_GOTO on a window; it is also the tool
+  # anyone reaches for when a window misbehaves. Plain Xlib, host libraries.
+  fetch "$XPROP_URL" "$XAPPS_SRC/xprop-${XPROP_VER}.tar.xz" "xprop"
+  if [ ! -d "$XAPPS_SRC/xprop-${XPROP_VER}" ]; then
+    tar -xf "$XAPPS_SRC/xprop-${XPROP_VER}.tar.xz" -C "$XAPPS_SRC" \
+      || { fail "xprop did not unpack"; exit 1; }
+  fi
+  XPROP_SRC="$XAPPS_SRC/xprop-${XPROP_VER}"
+  ( cd "$XPROP_SRC" && run_quiet ./configure --prefix=/usr )
+  [ -f "$XPROP_SRC/Makefile" ] || { fail "xprop configure produced no Makefile"; exit 1; }
+  run_quiet make -C "$XPROP_SRC" -j"$JOBS"
+  DESTDIR="$XAPPS_PREFIX" run_quiet make -C "$XPROP_SRC" install
+  [ -x "$XAPPS_PREFIX/usr/bin/xprop" ] || { fail "xprop did not build"; exit 1; }
+  install -m 0755 "$XAPPS_PREFIX/usr/bin/xprop" "$XAPPS_DIST/usr/bin/xprop"
+  ok "xprop staged ($(du -h "$XAPPS_DIST/usr/bin/xprop" | cut -f1))"
+  
+  header "xclip ${XCLIP_VER} (X11 clipboard)"
+  # xfilesctl moves the selected paths through the CLIPBOARD/ text/uri-list
+  # selection with xclip. It needs Xmu (XmuClientWindow) as well as X11 - both
+  # host libraries with headers.
+  #
+  # 0.13 is from 2010 and remains the current release. Neither the GitHub tag
+  # archive nor Debian's orig tarball (same bytes, same pin) carries a generated
+  # configure - only configure.ac, Makefile.in and the bootstrap script, which
+  # is just `autoreconf -i`. So configure is generated here, the way upstream
+  # did for its own release tarballs.
+  fetch "$XCLIP_URL" "$XAPPS_SRC/xclip-${XCLIP_VER}.tar.gz" "xclip"
+  if [ ! -d "$XAPPS_SRC/xclip-${XCLIP_VER}" ]; then
+    tar -xf "$XAPPS_SRC/xclip-${XCLIP_VER}.tar.gz" -C "$XAPPS_SRC" \
+      || { fail "xclip did not unpack"; exit 1; }
+  fi
+  XCLIP_SRC="$XAPPS_SRC/xclip-${XCLIP_VER}"
+  ( cd "$XCLIP_SRC" && run_quiet ./bootstrap )
+  [ -f "$XCLIP_SRC/configure" ] || { fail "xclip bootstrap produced no configure"; exit 1; }
+  ( cd "$XCLIP_SRC" && run_quiet ./configure --prefix=/usr )
+  [ -f "$XCLIP_SRC/Makefile" ] || { fail "xclip configure produced no Makefile"; exit 1; }
+  run_quiet make -C "$XCLIP_SRC" -j"$JOBS"
+  DESTDIR="$XAPPS_PREFIX" run_quiet make -C "$XCLIP_SRC" install
+  [ -x "$XAPPS_PREFIX/usr/bin/xclip" ] || { fail "xclip did not build"; exit 1; }
+  install -m 0755 "$XAPPS_PREFIX/usr/bin/xclip" "$XAPPS_DIST/usr/bin/xclip"
+  ok "xclip staged ($(du -h "$XAPPS_DIST/usr/bin/xclip" | cut -f1))"
+  
+  header "dmenu ${DMENU_VER} (launcher)"
+  # The launcher scripts and muscle memory expect. xmenu.sh is this desktop's
+  # menu; dmenu is the fallback and the one XWayland users reach for.
+  #
+  # No configure: dmenu is a lui/*.c build driven by config.mk, and its X11INC/
+  # X11LIB/FREETYPEINC variables are the supported override points. Both are
+  # consumed as `-I$(X11INC)` / `-L$(X11LIB)` - the flag is glued to the FIRST
+  # entry only - so the extra directory has to carry its own -I/-L. The host
+  # lacks libXft entirely, so the prefix entry is what finds Xft.h and libXft.
+  # Xinerama stays on: it is a host library the closure stages anyway, and the
+  # default config.mk expects it.
+  fetch "$DMENU_URL" "$XAPPS_SRC/dmenu-${DMENU_VER}.tar.gz" "dmenu"
+  if [ ! -d "$XAPPS_SRC/dmenu-${DMENU_VER}" ]; then
+    tar -xf "$XAPPS_SRC/dmenu-${DMENU_VER}.tar.gz" -C "$XAPPS_SRC" \
+      || { fail "dmenu did not unpack"; exit 1; }
+  fi
+  DMENU_SRC="$XAPPS_SRC/dmenu-${DMENU_VER}"
+  DMENU_MAKE_VARS=(
+    X11INC="/usr/include -I$XAPPS_PREFIX/usr/include"
+    X11LIB="/usr/lib64 -L$XAPPS_PREFIX/usr/lib64"
+    FREETYPEINC="/usr/include/freetype2"
+  )
+  run_quiet make -C "$DMENU_SRC" -j"$JOBS" "${DMENU_MAKE_VARS[@]}"
+  [ -x "$DMENU_SRC/dmenu" ] || { fail "dmenu did not build"; exit 1; }
+  DESTDIR="$XAPPS_PREFIX" run_quiet make -C "$DMENU_SRC" install PREFIX=/usr "${DMENU_MAKE_VARS[@]}"
+  [ -x "$XAPPS_PREFIX/usr/bin/dmenu" ] || { fail "dmenu install produced nothing"; exit 1; }
+  install -m 0755 "$XAPPS_PREFIX/usr/bin/dmenu" "$XAPPS_DIST/usr/bin/dmenu"
+  ok "dmenu staged ($(du -h "$XAPPS_DIST/usr/bin/dmenu" | cut -f1))"
+  
+  # ---------------------------------------------------------------------------
+  header "Staging Imlib2 + its dlopen'd loaders"
 install -m 0755 "$IMLIB2_LIB" "$XAPPS_DIST/usr/lib64/$(basename "$IMLIB2_LIB")"
 install -m 0644 "$GIFLIB_LIB" "$XAPPS_DIST/usr/lib64/$(basename "$GIFLIB_LIB")"
-# libXft and libXpm are built into our prefix, not found by the host's loader, so
-# ldd below never visits them - exactly the situation the EXTRA_LIB hand-add
-# further down exists for. Their sonames go in as real copies, since that is what
-# xfiles' DT_NEEDED names.
-for lib in "$XFT_LIB" "$XPM_LIB"; do
+  # libXft, libXpm and libXaw are built into our prefix, not found by the host's
+  # loader, so ldd below never visits them - exactly the situation the EXTRA_LIB
+  # hand-add further down exists for. Their sonames go in as real copies, since
+  # that is what xfiles' and xmessage's DT_NEEDED names.
+  for lib in "$XFT_LIB" "$XPM_LIB" "$XAW_LIB"; do
   [ -n "$lib" ] || continue
   cp -n "$lib" "$XAPPS_DIST/usr/lib64/$(basename "$lib")" 2>/dev/null || true
   soname="$(objdump -p "$lib" | sed -n 's/^ *SONAME *//p' | head -1 || true)"

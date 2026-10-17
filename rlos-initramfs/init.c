@@ -1439,8 +1439,8 @@ static void drop_to_user(void) {
 }
 
 /* Take ownership of, and lock down, the files that govern privilege
- * escalation: sudo itself, its policy file, and the image's one other
- * setuid-root helper, seatd-launch.
+ * escalation: sudo itself, its policy file, and the image's setuid-root
+ * helpers, seatd-launch and unix_chkpwd.
  *
  * sudo refuses to run unless it is setuid root AND owned by uid 0, and it
  * refuses to read a sudoers file that is not root-owned 0440. The initramfs is
@@ -1459,6 +1459,14 @@ static void drop_to_user(void) {
  * is uid 1000. Staged by an unprivileged build like sudo, so the bit has to
  * be set here.
  *
+ * unix_chkpwd is Linux-PAM's password verifier. pam_unix uses it whenever the
+ * calling process cannot read /etc/shadow itself - which is every locker
+ * check, because i3lock and swaylock run as uid 1000 - and it can only open
+ * the shadow file when it starts with root's privileges. With the setuid bit
+ * lost in the archive the helper runs as uid 1000 and every password,
+ * including the correct one, comes back "wrong". Same staging problem as the
+ * two above.
+ *
  * /etc/shadow is locked down for the same reason and because it holds password
  * hashes that no non-root process has any business reading. */
 static void secure_privileged_files(void) {
@@ -1466,6 +1474,7 @@ static void secure_privileged_files(void) {
     { "/usr/bin/sudo",         0, 0, 04755 },
     { "/usr/bin/sudoedit",     0, 0, 04755 },
     { "/bin/seatd-launch",     0, 0, 04755 },
+    { "/usr/sbin/unix_chkpwd", 0, 0, 04755 },
     { "/etc/sudoers",          0, 0, 00440 },
     { "/etc/sudoers.d",        0, 0, 00750 },
     { "/etc/passwd",           0, 0, 0644 },
@@ -3687,6 +3696,22 @@ static void do_shutdown(int mode) {
      * pointing at it, which is why DISPLAY is absent above rather than set to
      * a placeholder.
      */
+    /* The D-Bus system bus, before the Wayland session starts.
+     *
+     * sway is built with -Dsd-bus-provider=libelogind and touches the system
+     * bus while it initialises, and it is forked (and its socket waited for)
+     * below - so the bus has to exist by then. It used to be started after
+     * this whole block, which left the compositor racing it: once on a
+     * reboot the session came up with a D-Bus failure the rest of the image
+     * could not explain. iwd and bluetoothd, registered further down, connect
+     * during startup and exit if the bus is absent - the same wait covers
+     * all three consumers.
+     *
+     * Started and WAITED FOR rather than added to the supervised table: like
+     * sshd, dbus-daemon daemonises itself, and ordering cannot be left to a
+     * table that forks everything at once. */
+    start_dbus_once();
+
     if (have_sway) {
       /* What the compositor actually has to work with, printed before it is
        * started. Without this the only symptom of a missing DRM node is
@@ -4006,12 +4031,12 @@ supervise(procs, &nprocs, { "mlterm", "/bin/mlterm",
       supervise(procs, &nprocs, { "swaybar", "/bin/swaybar",
           swaybar_argv, wl_envp, 1, 1, -1, 0, 0, NULL });
 
-      /* No wallpaper and no terminal yet. swaybg is not built (it is a
-       * separate project, not part of the sway tree) and no terminal emulator
-       * is staged for the Wayland backend; sway's own background is whatever
-       * swaybg would have painted, which is the default solid colour. Adding
-       * either later is one supervise() call each - the table has room, which
-       * is the reason it was raised to 18 above rather than left at 12. */
+      /* No wallpaper, terminal or locker in this table, and that is the point:
+       * sway's own config starts them. `exec foot` runs the terminal, the
+       * `output * bg` rule makes sway spawn swaybg for the wallpaper, and
+       * swaylock is bound to Super+Escape - all children of the compositor, so
+       * they die and restart with it instead of being supervised here. init
+       * starts the compositor; the compositor starts its session. */
     } else {
       if (access("/bin/Xorg", X_OK) == 0) {
         warn("init: X display did not come up - falling back to the text console\n");
@@ -4109,14 +4134,6 @@ supervise(procs, &nprocs, { "mlterm", "/bin/mlterm",
       net_setup_pid = netpid;
     }
   }
-
-  /* The D-Bus system bus, before iwd and bluetoothd are registered below.
-   *
-   * Started and WAITED FOR rather than added to the supervised table, because
-   * both of those daemons connect to the bus during startup and exit if it is
-   * absent - so ordering cannot be left to a table that forks everything at once.
-   */
-  start_dbus_once();
 
     /* The wireless rebind is NOT done here. It happens at the very top of main(),
      * right after sysfs is mounted - see the call there. It used to live here, and

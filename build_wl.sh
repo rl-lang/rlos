@@ -32,7 +32,8 @@
 #   xkbcommon   <- wlroots
 #   libseat     <- wlroots
 #   wlroots     <- sway
-#   sway        <- swaybar, swaybg
+#   sway        <- swaybar, swaymsg, swaynag, swaybg
+#   swaylock    <- the screen locker (PAM-authenticated; i3lock's twin on -x)
 #
 # libinput and eudev are the one real wrinkle. build_x11.sh already builds
 # libinput and eudev into x11-dist, so an -x -w combination could reuse them -
@@ -43,9 +44,13 @@
 # before the backend works at all.
 #
 # Output:
-#   wayland-dist/usr/bin/{sway,swaybar,swaybg}
+#   wayland-dist/bin/{sway,swaybar,swaymsg,swaynag,swaybg,swaylock}
+#   wayland-dist/usr/bin/{Xwayland,xkbcomp}
 #   wayland-dist/usr/lib64/                 + the ldd closure of all of the above
-#   wayland-dist/usr/lib/x86_64-linux-gnu/  (same, for anything that lands there)
+#   wayland-dist/usr/lib64/security/        the PAM module directory
+#   wayland-dist/usr/sbin/unix_chkpwd       setuid; pam_unix needs it
+#   wayland-dist/etc/pam.d/{swaylock,login}
+#   wayland-dist/usr/share/rlos/background.png
 #   wayland-dist/usr/share/wayland-sessions/
 #
 # Usage:
@@ -1338,10 +1343,10 @@ step "meson + ninja"
 # dist stage below gates the result: libxcb-icccm must appear in sway's
 # DT_NEEDED, or X clients would have no window manager to talk to.
 #
-# -Dtray=disabled and -Dswaynag=false drop the status-notifier tray (which needs
-# a tray host to talk to) and the dialog tool, neither of which this image has a
-# use for. -Dsd-bus-provider=libelogind because every choice is systemd, and there
-# is no systemd here - init.c is PID 1.
+# -Dtray=disabled drops the status-notifier tray, which needs a tray host to
+# talk to. swaynag, the dialog tool, IS built: scripts and sway itself use it
+# for confirmations and warnings. -Dsd-bus-provider=libelogind because every
+# choice is systemd, and there is no systemd here - init.c is PID 1.
 #
 # Built through meson_build_guestpaths rather than meson_build so the compiled-in
 # sysconfdir is /etc. meson_build's --prefix=$WL_PREFIX would bake this machine's
@@ -1354,12 +1359,13 @@ step "meson + ninja"
 # the build host's real /etc - the same reason libinput and kmod go through it.
 meson_build_guestpaths sway "$WL_SRC/sway" ".wl-sway.log" - /etc \
     -Dsysconfdir=/etc \
-    -Dswaybar=true -Dtray=disabled -Dswaynag=false -Dsd-bus-provider=libelogind \
+    -Dswaybar=true -Dtray=disabled -Dswaynag=true -Dsd-bus-provider=libelogind \
     -Dman-pages=disabled -Ddefault-wallpaper=false \
     -Dzsh-completions=false -Dbash-completions=false -Dfish-completions=false
-need_bin sway "sway"
-need_bin swaybar "swaybar"
-need_bin swaymsg "swaymsg"
+  need_bin sway "sway"
+  need_bin swaybar "swaybar"
+  need_bin swaymsg "swaymsg"
+  need_bin swaynag "swaynag"
 ok "sway built ($(du -h "$WL_PREFIX/bin/sway" 2>/dev/null | cut -f1))"
 
 fi
@@ -1378,9 +1384,11 @@ fi
 #   grim          screenshot, via the wlr-screencopy protocol
 #   wf-recorder   screen + audio recorder, also wlr-screencopy
 #   foot          terminal emulator
+#   swaylock      screen locker, PAM-authenticated (i3lock's twin on -x)
 #
-# All four are built here rather than left to a distro package because the point
-# of the exercise is that nothing in the image resolves against the build host.
+# All of these are built here rather than left to a distro package because the
+# point of the exercise is that nothing in the image resolves against the build
+# host.
 # ---------------------------------------------------------------------------
 
 header "swaybg (wallpaper daemon)"
@@ -1392,6 +1400,82 @@ step "meson + ninja"
 meson_build swaybg "$WL_SRC/swaybg" ".wl-swaybg.log" -Dgdk-pixbuf=enabled -Dman-pages=disabled
 need_bin swaybg "swaybg"
 ok "swaybg built"
+
+PAM_VER="1.7.2"
+PAM_URL="https://github.com/linux-pam/linux-pam/releases/download/v${PAM_VER}/Linux-PAM-${PAM_VER}.tar.xz"
+header "linux-pam ${PAM_VER} (swaylock's authenticator)"
+# swaylock does not compare passwords itself: pam_start("swaylock", ...) hands
+# the job to the module stack, the same way i3lock does on -x. That needs
+# /usr/lib64/security/pam_unix.so, the /etc/pam.d/swaylock service file and the
+# setuid unix_chkpwd helper - the staging block at the bottom of this script
+# stages all three.
+#
+# Built HERE rather than reused from build_x11.sh's prefix, for the same reason
+# libinput and eudev are built twice: no image ever carries both dists, and an
+# -w image must not depend on x11-dist existing. The duplication is in the
+# BUILD TREE only.
+#
+# meson_build_guestpaths, and -Dlibdir=lib64, are both load-bearing. linux-pam
+# compiles its module directory in as libdir/security; with --prefix=/usr the
+# guest path is /usr/lib64/security, and 64-bit meson defaults are not stable
+# across distros (Debian says lib/x86_64-linux-gnu, this host's meson says lib).
+# -Dlibdir is a builtin meson option, so it goes through cleanly alongside the
+# helper's fixed --prefix=/usr. Every optional feature is off: audit, selinux,
+# nis, econf, logind, elogind and pwaccess would each link or dlopen libraries
+# this image does not carry, and docs/i18n/examples/xtests are build-time
+# weight with no runtime meaning.
+pins_fetch "$PAM_URL" "$WL_SRC/Linux-PAM-${PAM_VER}.tar.xz" "linux-pam"
+if [ ! -d "$WL_SRC/Linux-PAM-${PAM_VER}" ]; then
+    unpack "$WL_SRC/Linux-PAM-${PAM_VER}.tar.xz" "$WL_SRC/Linux-PAM-${PAM_VER}"
+fi
+step "meson + ninja"
+meson_build_guestpaths linux-pam "$WL_SRC/Linux-PAM-${PAM_VER}" ".wl-pam.log" - - \
+    -Dlibdir=lib64 \
+    -Daudit=disabled -Dselinux=disabled -Dnis=disabled -Deconf=disabled \
+    -Dlogind=disabled -Delogind=disabled -Dpwaccess=disabled \
+    -Ddocs=disabled -Di18n=disabled -Dexamples=false -Dxtests=false
+# Derive the module directory from where libpam actually landed rather than
+# guessing lib/ vs lib64/: pam compiles securedir as its own libdir/security,
+# and this is the same search the rest of the script uses for prefix libraries.
+PAM_LIB="$(prefix_lib libpam.so.0)" || fail "libpam.so.0 was not built"
+PAM_MODDIR="$(dirname "$PAM_LIB")/security"
+[ -f "$PAM_MODDIR/pam_unix.so" ] || fail "pam_unix.so is not in $PAM_MODDIR"
+# unix_chkpwd lands under the prefix's sbin/ (meson_build_guestpaths merges
+# usr/sbin there); it is what lets a non-root locker check /etc/shadow at all.
+[ -x "$WL_PREFIX/sbin/unix_chkpwd" ] || fail "unix_chkpwd was not built"
+ok "linux-pam built (pam_unix.so $(du -h "$PAM_MODDIR/pam_unix.so" | cut -f1))"
+
+header "swaylock 1.8.6 (screen locker)"
+# The -w twin of i3lock: locks the screen, paints the wallpaper behind the
+# unlock prompt (same PNG as the -x side), and authenticates through PAM.
+#
+# Pinned by COMMIT, not tag. The GitHub mirror's tags stop at 1.7 while 1.8.6
+# is current, and gitlab.freedesktop.org's git endpoint for swaylock answers
+# with an interactive auth prompt instead of the repository. The commit hash in
+# pins.lock is the pin; the extra `git checkout` below is what makes the hash
+# mean anything.
+SWAYLOCK_REPO="https://github.com/swaywm/swaylock"
+SWAYLOCK_SHA="44b82de635c3bc66b0093abd1cf8cc1c8b1b9c0f"   # 1.8.6, see pins.lock
+if [ ! -d "$WL_SRC/swaylock/.git" ]; then
+    GIT_TERMINAL_PROMPT=0 git clone --quiet "$SWAYLOCK_REPO" "$WL_SRC/swaylock" \
+        || fail "swaylock clone failed: $SWAYLOCK_REPO"
+fi
+git -C "$WL_SRC/swaylock" checkout --quiet "$SWAYLOCK_SHA" \
+    || fail "swaylock: cannot check out pinned commit $SWAYLOCK_SHA"
+step "meson + ninja"
+# -Dpam and -Dgdk-pixbuf are feature options (enabled, not true). libpam has no
+# .pc file, so find_library('pam') consults the compiler search path - without
+# LIBRARY_PATH it takes the host's /usr/lib64/libpam.so, ldd then resolves the
+# host's libpam.so.0 into the closure, and the image ships modules from one
+# build talking to a libpam from another. LIBRARY_PATH is unset right after:
+# bash keeps variable assignments made before a function call, and leaving it
+# set would let every later build quietly prefer prefix copies of host libs.
+LIBRARY_PATH="$WL_PREFIX/lib64:$WL_PREFIX/lib" \
+    meson_build swaylock "$WL_SRC/swaylock" ".wl-swaylock.log" \
+        -Dpam=enabled -Dgdk-pixbuf=enabled
+unset LIBRARY_PATH
+need_bin swaylock "swaylock"
+ok "swaylock built ($(du -h "$WL_PREFIX/bin/swaylock" | cut -f1))"
 
 header "grim (screenshot - wlr-screencopy)"
 
@@ -1520,14 +1604,15 @@ ok "foot built"
 
 header "Stage: dist (staging wayland-dist/ from wl-prefix/)"
 
-# sway, swaybar and swaymsg are the whole user-visible surface for now.
-# wl-surface/session files and the seatd helper get added below.
-for b in sway swaybar swaymsg swaybg foot grim wf-recorder; do
+  # The user-visible surface: the compositor and bar, the tools to drive it,
+  # the wallpaper daemon it spawns, the terminal and the locker. Session files
+  # and the seatd helper get added below.
+  for b in sway swaybar swaymsg swaynag swaybg foot grim wf-recorder swaylock; do
     # wf-recorder is skipped above and simply will not exist; the others must.
     if [ -x "$WL_PREFIX/bin/$b" ]; then
         cp -f "$WL_PREFIX/bin/$b" "$WL_DIST/bin/"
     fi
-done
+  done
 # wayland-sessions: sway.desktop, installed by meson into share/. Staged whole
 # rather than file-by-file so a future sway release adding a session file does
 # not silently lose it.
@@ -1680,9 +1765,11 @@ ok "Xwayland staged at usr/bin/Xwayland ($(du -h "$WL_DIST/usr/bin/Xwayland" | c
 #   3. It has no `exec` line, so it opens a desktop with no terminal and no
 #      launcher.
 #
-# It also wants swaybg for an image wallpaper. This image stages no wallpaper
-# file, so the background is set with sway's own `background` command instead -
-# one fewer daemon to supervise for a solid colour.
+# Its image wallpaper line is back, now that both halves exist: swaybg is built
+# and the image is staged at /usr/share/rlos/background.png. `output * bg <file>`
+# makes sway launch swaybg itself (sway/config/output.c spawn_swaybg), so there
+# is still one process to supervise and it is still not init's - it dies with
+# the compositor that started it.
 #
 # The config is the session's own description of what to run, so `exec foot`
 # belongs here rather than in init.c. init starts the compositor; the compositor
@@ -1703,18 +1790,29 @@ set $down j
 set $up k
 set $right l
 set $term foot
+# The screen locker, used by both the boot-to-lock autostart and the lock key
+# so the two cannot drift apart. -f forks into the background once it owns the
+# session, -i paints the same background.png as the output line further down,
+# and the colours are the shared palette (#1a1b26 desktop, #7dcfff accent,
+# #f38ba8 urgent, #a6adc8 text) so both backends read as one system.
+# --indicator-idle-visible keeps the ring on screen before the first keypress
+# (swaylock hides it by default) and --show-failed-attempts counts bad tries.
+set $lock swaylock -f -i /usr/share/rlos/background.png --indicator-idle-visible --show-failed-attempts --font monospace --inside-color 1a1b26e6 --ring-color 7dcfff --key-hl-color 7dcfff --bs-hl-color f38ba8 --text-color a6adc8 --inside-ver-color 1a1b26e6 --ring-ver-color 7dcfff --inside-wrong-color 1a1b26e6 --ring-wrong-color f38ba8
 
 ### Output
-# A solid colour, not an image. An image would need a wallpaper file staged into
-# the image; none is, and shipping one to fill a background is not worth it.
+# The image wallpaper lives further down, at the "Output layout" heading. This
+# block exists to say why it is spelled the way it is.
 #
 # NOTE the command is `output ... bg`, NOT a bare `background`. There is no
 # `background` command in sway 1.12 - commands.c lists only `output` - so
-# `background #1c1c1c solid_color` fails to parse as an unknown command and sway
-# aborts the whole config. The real rule is further down, at the "Output layout"
-# heading; this block exists to say why it is spelled that way.
+# `background /usr/share/rlos/background.png fill` fails to parse as an unknown
+# command and sway aborts the whole config.
 
 ### Autostart
+# Boot-to-lock: start the session locked, with the same command the lock key
+# uses ($lock). The desktop comes up behind the prompt; the password is what
+# the user meets first.
+exec $lock
 # The session's terminal. sway execs this and keeps it as a child, so it dies
 # with the compositor and restarts with it - which is why it is here and not
 # registered in init.c's supervised table.
@@ -1724,6 +1822,11 @@ exec $term
     bindsym $mod+Return exec $term
     bindsym $mod+Shift+q kill
     bindsym $mod+Shift+c reload
+
+    # Screen lock. The command is the $lock variable at the top of this file,
+    # shared with the boot-to-lock autostart above; the comment there explains
+    # the flags.
+    bindsym $mod+Escape exec $lock
 
     # Focus and move. Vim keys under Mod4, arrows under Mod1.
     bindsym $mod+$left  focus left
@@ -1787,7 +1890,13 @@ input * {
 ### Output layout
 # Single output, filling it. QEMU presents one connector; spelling it out means
 # sway does not have to guess when there is no EDID to read.
-output * bg #1c1c1c solid_color
+#
+# Image first, with a colour fallback as the trailing argument: sway's
+# background parser (sway/commands/output/background.c) takes a trailing
+# #rrggbb as background_fallback and passes it to swaybg as -c, behind -i.
+# So a missing or unreadable file degrades to the old solid #1c1c1c instead of
+# black. swaybg itself is spawned by sway; see the comment above this config.
+output * bg /usr/share/rlos/background.png fill #1c1c1c
 
 # Global font; the bar overrides the size (11) for its own text.
 font pango:JetBrainsMono Nerd Font Mono 12
@@ -2271,6 +2380,57 @@ mkdir -p "$WL_DIST/usr/share/rlos"
 cp -f "$SCRIPT_DIR/etc-rlos/fonts.conf" "$WL_DIST/usr/share/rlos/fonts.conf"
 ok "fonts.conf staged ($(wc -l < "$WL_DIST/usr/share/rlos/fonts.conf") lines)"
 
+# The wallpaper. One file, used three ways: sway spawns swaybg to paint it
+# (the output line in the config above), swaylock dims it behind the unlock
+# prompt, and the -x image paints and locks with the same copy. Staged here
+# rather than in xapps-dist so a -w image stays self-contained.
+[ -f "$SCRIPT_DIR/background.png" ] \
+    || fail "background.png missing from the repo root"
+cp -f "$SCRIPT_DIR/background.png" "$WL_DIST/usr/share/rlos/background.png"
+ok "background.png staged ($(du -h "$WL_DIST/usr/share/rlos/background.png" | cut -f1))"
+
+# --- PAM, the half of the locker that is not the binary ----------------------
+# swaylock runs pam_start("swaylock", ...) and reads whatever the module stack
+# says. Three pieces have to be in place for that to authenticate anything;
+# build_x11.sh's staging carries the same block with the same reasoning.
+#
+#   usr/lib64/security/
+#     the modules. linux-pam compiles securedir in as libdir/security, so this
+#     exact directory is where pam looks. The whole directory goes in (1.4MB),
+#     the same call the Xorg module staging makes: a named module missing from
+#     a service file is a login failure that is painful to diagnose from a
+#     locked screen.
+#
+#   usr/sbin/unix_chkpwd, mode 4755
+#     the setuid helper pam_unix execs when the CALLER cannot read /etc/shadow,
+#     which is the normal case - swaylock runs as the user who locked the
+#     screen. The path is compiled in, and 4755 is the mode Linux-PAM itself
+#     installs. assemble-rootfs.sh copies with cp -a, so the bit survives.
+#
+#   etc/pam.d/
+#     the service files. swaylock's ships from its own install tree and says
+#     `auth include login`; /etc/pam.d/login is written here, byte-identical to
+#     build_x11.sh's. The guest's busybox login never reads it - it checks
+#     /etc/shadow itself - it exists for the include.
+mkdir -p "$WL_DIST/usr/lib64/security" "$WL_DIST/usr/sbin" "$WL_DIST/etc/pam.d"
+for mod in "$PAM_MODDIR"/*.so; do
+    [ -e "$mod" ] || fail "no PAM modules under $PAM_MODDIR"
+    cp -f "$mod" "$WL_DIST/usr/lib64/security/"
+done
+install -m 4755 "$WL_PREFIX/sbin/unix_chkpwd" "$WL_DIST/usr/sbin/unix_chkpwd"
+cat > "$WL_DIST/etc/pam.d/login" << 'PAMEOF'
+# Staged by build_x11.sh and build_wl.sh - byte-identical in both images.
+#
+# busybox login does not read this file; i3lock's service file includes it, so
+# every credential check the locker makes lands in the two lines below.
+auth     required pam_unix.so
+account  required pam_unix.so
+PAMEOF
+[ -f "$WL_PREFIX/etc/pam.d/swaylock" ] \
+    || fail "swaylock's pam.d service file was not installed"
+cp -f "$WL_PREFIX/etc/pam.d/swaylock" "$WL_DIST/etc/pam.d/swaylock"
+ok "PAM staged (pam_unix.so, unix_chkpwd 4755, pam.d/swaylock + login)"
+
 ok "sway config written ($(wc -l < "$WL_DIST/etc/sway/config") lines, no build-host paths)"
 
 # ---- ldd closure ------------------------------------------------------------
@@ -2318,8 +2478,13 @@ ALL_WL_ELFS="$(find $WL_ELF_DIRS -type f 2>/dev/null || true)"
 #
 # while every gate reported OK, because the gate had been asking the wrong
 # question of the wrong set of files. The loader asks it of everything.
+# The PAM module directory is in the CHECK set for the same reason the staged
+# libraries are: pam_unix.so is dlopen'd by libpam, never named in any
+# DT_NEEDED, and it does have real dependencies (libcrypt). Without this, its
+# closure would never be visited.
 WL_CHECK_ELF="$ALL_WL_ELFS
-$(find "$WL_DIST/usr/lib64" -maxdepth 1 -type f -name '*.so*' 2>/dev/null)"
+$(find "$WL_DIST/usr/lib64" -maxdepth 1 -type f -name '*.so*' 2>/dev/null)
+$(find "$WL_DIST/usr/lib64/security" -maxdepth 1 -type f -name '*.so' 2>/dev/null)"
 for elf in $WL_CHECK_ELF; do
     [ -f "$elf" ] || continue
     collect_wl "$elf"
@@ -2561,4 +2726,4 @@ done
 info "renderers: pixman always; GLES2 available through Mesa softpipe"
 info "still to do:"
 info "  - ffmpeg (stage 6), which unblocks wf-recorder"
-info "  - a boot test of Xwayland on -w: feh and xfiles under sway"
+info "  - a boot test of the lockers: swaylock on -w, i3lock on -x"

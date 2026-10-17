@@ -330,3 +330,51 @@ kmod.repo=https://github.com/kmod-project/kmod
 kmod.sha=0e72cc5
 kmod.note=branch 31
 
+# linux-pam: the authentication behind both screen lockers (swaylock on -w,
+# i3lock on -x). Built from source for the RUNTIME half more than the library:
+# pam_unix.so is dlopen'd (no DT_NEEDED edge exists to it from the locker), it
+# execs a setuid unix_chkpwd whose path is compiled in, and libpam resolves
+# relative module names against its compiled-in security directory - all three
+# have to agree with each other, which is not a property a host package can be
+# assumed to have. 1.7.x dropped autotools; this is a meson build.
+linux-pam.url=https://github.com/linux-pam/linux-pam/releases/download/v1.7.2/Linux-PAM-1.7.2.tar.xz
+linux-pam.sha256=3d86b6383fb5fd9eb9578d2cd47d92801191f4bf3f9bc61419bfefc8aa1e531a
+
+# swaylock 1.8.6: the Wayland session lock, via ext-session-lock-v1. Pinned to
+# a commit rather than a tag: the releases stopped at 1.7 while development
+# continued on master, so 1.8.6 exists only as a version bump commit.
+swaylock.repo=https://github.com/swaywm/swaylock
+swaylock.sha=44b82de635c3bc66b0093abd1cf8cc1c8b1b9c0f
+swaylock.note=1.8.6
+
+# i3lock 2.16: the X11 session lock. GitHub's release has no attached archive
+# (the download URL 404s), so this is the auto-generated tag tarball.
+i3lock.url=https://github.com/i3/i3lock/archive/refs/tags/2.16.tar.gz
+i3lock.sha256=d62e81d3ab0bdd66363eec3671f2da24c7f662775705e4b33fd712796ba7e257
+
+# libXaw: xmessage is an Xt/Xaw dialog client, and Xaw is the one piece of its
+# dependency set the host does not have. Xt, Xmu, SM and ICE are host libs the
+# closure stage like any other.
+libXaw.url=https://www.x.org/releases/individual/lib/libXaw-1.0.16.tar.xz
+libXaw.sha256=731d572b54c708f81e197a6afa8016918e2e06dfd3025e066ca642a5b8c39c8f
+
+# xmessage: the little dialog xfilesctl uses for its yes/no confirmations.
+xmessage.url=https://www.x.org/releases/individual/app/xmessage-1.0.7.tar.xz
+xmessage.sha256=703fccb7a0b772d61d7e603c189b9739866aa97ba985c727275420f829a30356
+
+# xprop: xfilesctl uses it to set _CONTROL_GOTO on a window; it is also the
+# first thing anyone reaches for when an X property misbehaves.
+xprop.url=https://www.x.org/releases/individual/app/xprop-1.2.8.tar.xz
+xprop.sha256=d689e2adb7ef7b439f6469b51cda8a7daefc83243854c2a3b8f84d0f029d67ee
+
+# xclip: clipboard access for xfilesctl. The 0.13 release predates GitHub
+# release assets, so this is the auto-generated tag tarball.
+xclip.url=https://github.com/astrand/xclip/archive/refs/tags/0.13.tar.gz
+xclip.sha256=ca5b8804e3c910a66423a882d79bf3c9450b875ac8528791fb60ec9de667f758
+
+# dmenu: the launcher for X11 sessions (sway has wmenu through sway's own
+# config, but this desktop's launcher is xmenu.sh either way; dmenu is the
+# fallback every X user expects to exist).
+dmenu.url=https://dl.suckless.org/tools/dmenu-5.3.tar.gz
+dmenu.sha256=1a8f53e6fd2d749839ec870c5e27b3e14da5c3eeacbfcb945d159e1d5433795f
+

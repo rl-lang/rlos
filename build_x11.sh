@@ -11,19 +11,24 @@
 # under /sys/class/drm/card0/device/driver. Both drivers are staged because which
 # one is right is a property of the machine, not of the build.
 #
-# Userspace is i3 (WM) + mlterm (terminal), no multiplexer. Both replaced
-# the suckless stack (dwm/st/dvtm) and then Alacritty, none of which is still
-# built or staged. Xorg is the only large piece, built with GLX/glamor/DRI off.
+# Userspace is i3 (WM) + mlterm (terminal) + i3lock (screen locker), no
+# multiplexer. The first two replaced the suckless stack (dwm/st/dvtm) and then
+# Alacritty, none of which is still built or staged. Xorg is the only large
+# piece, built with GLX/glamor/DRI off.
 #
 # Output is a guest-root tree in x11-dist/:
 #   bin/Xorg                    the server (prefix=/usr so module paths match)
 #   bin/i3 i3bar i3-msg ...     window manager and the tools to drive it
 #   bin/mlterm                  the terminal i3's $term points at
+#   bin/i3lock                  the screen locker ($mod+Escape), PAM-authenticated
 #   bin/setrootcursor           themes the root cursor; see x11-drv/
 #   bin/setrootbg               fills the root window with a solid colour
 
 #   usr/lib64/xorg/modules/     fbdev_drv.so, fbdevhw.so + core video/input
 #   usr/lib64/                  the ldd closure, flat (guest has no ld.so.cache)
+#   usr/lib64/security/         pam_unix.so, the module i3lock authenticates through
+#   usr/sbin/unix_chkpwd        setuid helper pam_unix uses for /etc/shadow
+#   etc/pam.d/i3lock + login    PAM service files; see the PAM section below
 #   usr/bin/xkbcomp             the server shells out to this at startup
 #   usr/share/X11/xkb/          xkeyboard-config (a real runtime requirement)
 #   usr/share/fonts/            2x JetBrainsMono Nerd Font Mono
@@ -32,6 +37,7 @@
 #                               mlterm-256color + xterm-256color (tic)
 #   usr/share/rlos/xorg.conf    pins the fbdev driver explicitly
 #   usr/share/rlos/fonts.conf   fontconfig, maps monospace -> JetBrainsMono
+#   usr/share/rlos/background.png  the wallpaper feh paints and i3lock dims
 #
 # Only libXft is built from git; everything else is a pinned tarball or is
 # copied off the host. See build_gcc.sh for the sibling convention where a
@@ -211,6 +217,27 @@ FONT_FILES=("JetBrainsMonoNerdFontMono-Regular.ttf" "JetBrainsMonoNerdFontMono-B
             "JetBrainsMonoNerdFontMono-Italic.ttf" "JetBrainsMonoNerdFontMono-BoldItalic.ttf")
 HOST_FONT_DIR="/usr/share/fonts/nerdfonts"
 
+# --- the screen locker ----------------------------------------------------------
+# i3lock is the one program in this image that authenticates a human, and it does
+# so through PAM: pam_start("i3lock", ...) doled out against /etc/pam.d/i3lock.
+# The guest's console login does NOT use PAM (busybox login reads /etc/shadow
+# itself), but i3lock hard-links libpam and its service file includes `login`,
+# so this tree grows a PAM stack of its own.
+#
+# linux-pam is built HERE rather than reused from build_wl.sh for the same reason
+# libXft is: x11-dist must not depend on a prefix another script owns, and no
+# image ever carries both dists. build_wl.sh has the sibling copy.
+#
+# i3lock links the prefix's libpam, not the host's (LIBRARY_PATH in its section),
+# so one PAM version - and one libpam.so.0 in the closure - ships in this dist.
+PAM_VER="1.7.2"
+PAM_URL="https://github.com/linux-pam/linux-pam/releases/download/v${PAM_VER}/Linux-PAM-${PAM_VER}.tar.xz"
+
+# i3lock 2.16. The GitHub release asset URL 404s; the tag archive (sha256 in
+# pins.lock) extracts as i3lock-2.16 and ships meson.build with no autotools.
+I3LOCK_VER="2.16"
+I3LOCK_URL="https://github.com/i3/i3lock/archive/refs/tags/${I3LOCK_VER}.tar.gz"
+
 source "$SCRIPT_DIR/build-lib.sh"
 
 # Sourced after the colour helpers so pins_verify can report failures through
@@ -221,7 +248,7 @@ usage() {
   printf "\n"
   printf "${C_BOLD}Usage:${C_RESET} ${C_CYAN}build_x11.sh${C_RESET} [OPTIONS]\n"
   printf "\n"
-  printf "Vendor the X11 guest stack (Xorg + fbdev DDX + i3 + mlterm) into\n"
+  printf "Vendor the X11 guest stack (Xorg + fbdev DDX + i3 + mlterm + i3lock) into\n"
   printf "guest-root ${C_BOLD}x11-dist/${C_RESET}.\n"
   printf "\n"
   printf "${C_BOLD}Options:${C_RESET}\n"
@@ -611,6 +638,102 @@ done
 ok "no i3 binary references the build prefix (DT_NEEDED, RPATH and RUNPATH all clean)"
 ok "i3 built ($(du -h "$I3_SRC/build/i3" | cut -f1)), i3bar and i3-msg too"
 
+
+header "linux-pam ${PAM_VER} (i3lock's authenticator)"
+# WHY a whole PAM here for one locker: i3lock does not compare passwords itself.
+# It calls pam_start("i3lock", ...) and lets the module stack decide, which is
+# the same mechanism a real desktop uses and the same one swaylock uses on the
+# -w image. That brings /usr/lib64/security/pam_unix.so, the /etc/pam.d service
+# files and unix_chkpwd with it - see the staging block at the bottom of this
+# script for what each of those is for.
+#
+# Built as a normal meson project. linux-pam 1.7.x dropped autotools entirely,
+# so there is no configure to run. Every optional feature is OFF and that is
+# load-bearing, not tidiness: audit/selinux/nis/logind/pwaccess would each link
+# or dlopen libraries this image does not carry, and docs/i18n/examples/xtests
+# are build-time weight with no runtime meaning.
+#
+# --libdir=/usr/lib64 is explicit because PAM compiles its module directory in
+# as libdir/security (meson.build: securedir = join_paths(libdir, 'security')),
+# so the libdir choice IS the guest path pam_unix.so has to live at.
+# Installed into x11-prefix, like libXft and yajl: i3lock's find_library('pam')
+# has to resolve to THIS libpam, or the linker quietly takes the host's, the
+# closure stages the host's libpam.so.0 next to these modules, and the image
+# ships a two-source PAM. Installing into the prefix is what makes the
+# LIBRARY_PATH in i3lock's section mean something.
+fetch "$PAM_URL" "$X11_SRC/Linux-PAM-${PAM_VER}.tar.xz" "linux-pam"
+if [ ! -d "$X11_SRC/Linux-PAM-${PAM_VER}" ]; then
+  tar -xf "$X11_SRC/Linux-PAM-${PAM_VER}.tar.xz" -C "$X11_SRC" \
+    || { fail "linux-pam did not unpack"; exit 1; }
+fi
+PAM_SRC="$X11_SRC/Linux-PAM-${PAM_VER}"
+rm -rf "$PAM_SRC/build"
+( cd "$PAM_SRC" && \
+  run_quiet meson setup build --prefix=/usr --libdir=/usr/lib64 \
+    -Daudit=disabled -Dselinux=disabled -Dnis=disabled -Deconf=disabled \
+    -Dlogind=disabled -Delogind=disabled -Dpwaccess=disabled \
+    -Ddocs=disabled -Di18n=disabled -Dexamples=false -Dxtests=false && \
+  run_quiet ninja -C build -j"$(nproc)" && \
+  DESTDIR="$X11_PREFIX" run_quiet ninja -C build install )
+PAM_MODDIR="$X11_PREFIX/usr/lib64/security"
+# Every one of these is load-bearing: libpam.so.0 is what i3lock links,
+# pam_unix.so IS the authenticator, and unix_chkpwd is how a non-root caller
+# (i3lock) gets a password checked against /etc/shadow at all.
+[ -f "$X11_PREFIX/usr/lib64/libpam.so.0" ] || { fail "libpam.so.0 was not built"; exit 1; }
+[ -f "$PAM_MODDIR/pam_unix.so" ] || { fail "pam_unix.so was not built"; exit 1; }
+[ -x "$X11_PREFIX/usr/sbin/unix_chkpwd" ] || { fail "unix_chkpwd was not built"; exit 1; }
+ok "linux-pam built (pam_unix.so $(du -h "$PAM_MODDIR/pam_unix.so" | cut -f1))"
+
+
+header "i3lock ${I3LOCK_VER} (screen locker)"
+# The -x twin of swaylock: locks the screen, paints the wallpaper behind the
+# unlock prompt (cairo_image_surface_create_from_png - the same PNG path the
+# -w image locks with and feh paints), and authenticates through the PAM stack
+# built just above.
+#
+# LIBRARY_PATH is what makes find_library('pam') resolve to OUR prefix build
+# rather than the host's /usr/lib64/libpam.so - pam is the one dependency here
+# with no pkg-config file to steer, and mixing the host library with prefix
+# modules is a version skew this staging does not need. ldd then resolves the
+# prefix libpam through the exported LD_LIBRARY_PATH, so the closure below
+# stages that exact object into usr/lib64.
+#
+# CFLAGS supplies -I for xcb_xrm.h, the SAME meson bug the i3 section documents:
+# dpi.c includes <xcb/xcb_xrm.h>, meson.build does not add the xrm dependency's
+# compile args to that target, and upstream never notices because on a normal
+# system the header is in /usr/include/xcb. Same injection, same reason.
+#
+# The rest of the dependency set is host or prefix and already reachable:
+# xcb, xcb-randr/xinerama/image/util and xkbcommon(-x11) via pkg-config, cairo
+# and libev from the host, xcb-xrm through the pc file the i3 deps section
+# installed into the prefix (PKG_CONFIG_PATH from there is still in effect).
+fetch "$I3LOCK_URL" "$X11_SRC/i3lock-${I3LOCK_VER}.tar.gz" "i3lock"
+if [ ! -d "$X11_SRC/i3lock-${I3LOCK_VER}" ]; then
+  tar -xf "$X11_SRC/i3lock-${I3LOCK_VER}.tar.gz" -C "$X11_SRC" \
+    || { fail "i3lock did not unpack"; exit 1; }
+fi
+I3LOCK_SRC="$X11_SRC/i3lock-${I3LOCK_VER}"
+rm -rf "$I3LOCK_SRC/build"
+( cd "$I3LOCK_SRC" && \
+  CFLAGS="-I$X11_PREFIX/usr/include" \
+  LDFLAGS="-L$X11_PREFIX/usr/lib64 -Wl,-rpath-link,$X11_PREFIX/usr/lib64" \
+  LIBRARY_PATH="$X11_PREFIX/usr/lib64:${LIBRARY_PATH:-}" \
+  run_quiet meson setup build --prefix=/usr --libdir=/usr/lib64 && \
+  LIBRARY_PATH="$X11_PREFIX/usr/lib64:${LIBRARY_PATH:-}" \
+  run_quiet ninja -C build -j"$(nproc)" && \
+  DESTDIR="$X11_SRC/i3lock-pkg" run_quiet ninja -C build install )
+I3LOCK_PKG="$X11_SRC/i3lock-pkg"
+I3LOCK_BIN="$I3LOCK_PKG/usr/bin/i3lock"
+[ -x "$I3LOCK_BIN" ] || { fail "i3lock was not built"; exit 1; }
+# Same no-build-prefix assertion the i3 binaries get. meson's build_rpath would
+# otherwise bake this machine's x11-prefix into the binary, and DT_RUNPATH is
+# searched before the loader defaults.
+if readelf -d "$I3LOCK_BIN" 2>/dev/null | grep -E 'NEEDED|RPATH|RUNPATH' | grep -q "$X11_PREFIX"; then
+  fail "i3lock still references this machine's build prefix ($X11_PREFIX)"
+  exit 1
+fi
+ok "i3lock built ($(du -h "$I3LOCK_BIN" | cut -f1))"
+
 header "mlterm ${MLTERM_VER}"
 fetch "$MLTERM_URL" "$X11_SRC/mlterm-${MLTERM_VER}.tar.gz" "mlterm"
 # codeload names the top dir after the TAG (<name>-<tag>), not the version:
@@ -770,6 +893,7 @@ for keysym, action, what in [
         ('c',            'reload',            'reload'),
         ('e',            'restart',           'restart'),
         ('q',            'kill',              'kill'),
+        ('Escape',       'exec',              'lock'),
         ('Left',         'workspace',         'previous workspace'),
         ('Right',        'workspace',         'next workspace')]:
     check('i3: %s (%s) is not bound' % (keysym, what), bound(keysym, action))
@@ -840,7 +964,8 @@ rm -rf "$X11_DIST"
 # server's baked module path is /usr/lib64/xorg/modules - stage them there,
 # not under usr/lib. dlopen uses an absolute path, so ld.so.cache is irrelevant.
 mkdir -p "$X11_DIST/bin" "$X11_DIST/usr/bin" "$X11_DIST/usr/lib64/xorg/modules" \
-         "$X11_DIST/usr/lib64" "$X11_DIST/usr/share/fonts" \
+         "$X11_DIST/usr/lib64" "$X11_DIST/usr/lib64/security" "$X11_DIST/usr/sbin" \
+         "$X11_DIST/usr/share/fonts" "$X11_DIST/etc/pam.d" \
          "$X11_DIST/usr/share/icons" "$X11_DIST/usr/share/terminfo" \
          "$X11_DIST/usr/share/X11/xkb" "$X11_DIST/usr/share/rlos"
 
@@ -857,7 +982,18 @@ for i3bin in i3 i3bar i3-msg i3-input i3-nagbar; do
 done
 # The terminal i3's $term points at.
 cp "$MLTERM_BIN" "$X11_DIST/bin/mlterm"
+# The locker, bound to $mod+Escape in i3.config. Its PAM half is staged below.
+cp "$I3LOCK_BIN" "$X11_DIST/bin/i3lock"
 strip "$X11_DIST"/bin/* 2>/dev/null || true
+
+# The wallpaper. One file, used three ways: feh paints it over the setrootbg
+# colour (etc/i3.config), i3lock dims it behind the unlock prompt, and the -w
+# image paints and locks with the same copy. Staged here rather than in
+# xapps-dist so x11-dist stays self-contained even if this is the only dist an
+# image carries.
+[ -f "$SCRIPT_DIR/background.png" ] \
+  || { fail "background.png missing from the repo root"; exit 1; }
+cp "$SCRIPT_DIR/background.png" "$X11_DIST/usr/share/rlos/background.png"
 
 # mlterm's system config. --sysconfdir=/etc above makes the binary look in
 # /etc/mlterm for main and aafont. This is not optional cosmetic setup:
@@ -927,6 +1063,50 @@ cat > "$X11_DIST/etc/mlterm/aafont" << 'MLTERMEOF'
 DEFAULT = JetBrainsMono Nerd Font Mono
 ISO10646_UCS4_1 = JetBrainsMono Nerd Font Mono
 MLTERMEOF
+
+# --- PAM, the half of the locker that is not the binary -------------------------
+# i3lock runs pam_start("i3lock", username, ...) and reads whatever the module
+# stack says. Three pieces have to be in place for that to authenticate anything:
+#
+#   usr/lib64/security/
+#     the modules. linux-pam compiles securedir in as libdir/security, so this
+#     exact directory is where pam looks - not usr/lib, not a configurable
+#     path. The whole directory goes in (1.4MB, 43 modules), the same call the
+#     Xorg modules staging makes: a named module missing from a service file is
+#     a login failure that is painful to diagnose from a locked screen.
+#
+#   usr/sbin/unix_chkpwd, mode 4755
+#     the setuid helper pam_unix execs when the CALLER cannot read /etc/shadow -
+#     which is the normal case here, because i3lock runs as the user who locked
+#     the screen. The path is compiled in (CHKPWD_HELPER = sbindir/unix_chkpwd
+#     = /usr/sbin/unix_chkpwd), and 4755 is the mode Linux-PAM itself installs
+#     it with. assemble-rootfs.sh copies this tree with cp -a, so the bit
+#     survives into the image.
+#
+#   etc/pam.d/
+#     the service files. i3lock's is upstream's own, copied from its install
+#     tree; it says `auth include login`, and /etc/pam.d/login needs a pam_unix
+#     stack to include. The guest's busybox login never reads this file - it
+#     checks /etc/shadow itself - so this login is written minimally and exists
+#     for the include. The -w image stages a byte-identical one; if this ever
+#     drifts, that is the place to notice.
+for mod in "$PAM_MODDIR"/*.so; do
+  [ -e "$mod" ] || { fail "no PAM modules under $PAM_MODDIR"; exit 1; }
+  cp "$mod" "$X11_DIST/usr/lib64/security/"
+done
+install -m 4755 "$X11_PREFIX/usr/sbin/unix_chkpwd" "$X11_DIST/usr/sbin/unix_chkpwd"
+cat > "$X11_DIST/etc/pam.d/login" << 'PAMEOF'
+# Staged by build_x11.sh and build_wl.sh - byte-identical in both images.
+#
+# busybox login does not read this file; i3lock's service file includes it, so
+# every credential check the locker makes lands in the two lines below.
+auth     required pam_unix.so
+account  required pam_unix.so
+PAMEOF
+[ -f "$I3LOCK_PKG/etc/pam.d/i3lock" ] \
+  || { fail "i3lock's pam.d service file was not installed"; exit 1; }
+cp "$I3LOCK_PKG/etc/pam.d/i3lock" "$X11_DIST/etc/pam.d/i3lock"
+ok "PAM staged (pam_unix.so, unix_chkpwd 4755, pam.d/i3lock + login)"
 
 # Xorg modules: the fbdev DDX plus whatever the server dlopens at runtime.
 # Copy the whole modules tree rather than a hand-picked list - a missing
@@ -1831,6 +2011,11 @@ collect() {
 }
 ALL_ELFS="$(find "$X11_DIST/bin" "$X11_DIST/usr/bin" "$X11_DIST/sbin" "$X11_DIST/usr/sbin" \
   -type f 2>/dev/null; find "$X11_DIST/usr/lib64/xorg/modules" -name '*.so' -type f)"
+# pam_unix.so is dlopen'd by libpam, never named in any DT_NEEDED, so ldd over
+# the binaries above cannot reach it - and it does have real dependencies
+# (libcrypt). Feed the security directory in explicitly for the same reason the
+# xorg modules directory is fed in.
+ALL_ELFS="$ALL_ELFS $(find "$X11_DIST/usr/lib64/security" -name '*.so' -type f 2>/dev/null)"
 for elf in $ALL_ELFS; do
   [ -f "$elf" ] || continue
   collect "$elf"
@@ -1965,7 +2150,7 @@ ok "x11-dist ready ($(du -sh "$X11_DIST" | cut -f1))"
 info "layout:"
 find "$X11_DIST" -maxdepth 3 -type d | sort | sed 's/^/         /'
 info "binaries:"
-for b in Xorg i3 i3bar i3-msg mlterm setrootcursor setrootbg; do
+for b in Xorg i3 i3bar i3-msg mlterm i3lock setrootcursor setrootbg; do
   if [ -f "$X11_DIST/bin/$b" ]; then
     printf "         %-14s %s\n" "$b" "$(du -h "$X11_DIST/bin/$b" | cut -f1)"
   fi
@@ -1978,7 +2163,7 @@ done
 # nonzero, which under `set -o pipefail` aborted the whole build in the results
 # section - after all the real work had already succeeded. Asking the filesystem
 # also keeps this honest if a binary moves again.
-for b in i3 i3bar mlterm setrootcursor setrootbg; do
+for b in i3 i3bar mlterm i3lock setrootcursor setrootbg; do
   info "$b linkage:"
   p="$(find "$X11_DIST" -type f -name "$b" -perm -u+x | head -1)"
   if [ -z "$p" ]; then

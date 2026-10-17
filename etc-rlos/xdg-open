@@ -1,0 +1,78 @@
+#!/bin/sh
+# xdg-open - open a file with the program this image actually ships.
+#
+# Written for rlOS rather than copied from a desktop: there is no mime
+# database, no desktop portal, and busybox has no `file` applet, so anything
+# that dispatches on MIME type cannot work here. This dispatches on shape
+# instead - URL, directory, known extension - against the tools the image
+# really has:
+#
+#   images        feh        (xapps-dist, present under both backends)
+#   directories   xfiles
+#   http(s) URLs  w3m
+#   text files    the session's terminal running $EDITOR (foot or mlterm)
+#   media files   ffplay, when the backend has it (it is -x only)
+#
+# Anything else fails loudly. This script is backgrounded by xfiles and
+# xfilesctl (`command -- "$OPENER" "$@" &`), so silence would read as a crash
+# with no message; the error says which file and why.
+#
+# Installed to usr/bin/xdg-open in xapps-dist by build_xapps.sh, because the
+# programs that exec it ship in that same dist.
+
+set -eu
+
+if [ $# -ne 1 ]; then
+    echo "usage: xdg-open FILE|URL" >&2
+    exit 2
+fi
+target="$1"
+
+# URLs first: an http(s) target is neither a file nor a directory.
+case "$target" in
+    http://*|https://*)
+        if command -v w3m >/dev/null 2>&1; then
+            exec w3m "$target"
+        fi
+        echo "xdg-open: no browser in this image" >&2
+        exit 1
+        ;;
+esac
+
+[ -d "$target" ] && exec xfiles "$target"
+[ -e "$target" ] || { echo "xdg-open: $target: no such file or directory" >&2; exit 1; }
+
+# The same selection xfilesctl's terminal uses: foot under Wayland when it is
+# staged, mlterm under X11, and xterm as the historical last resort. All three
+# accept `-e COMMAND` - foot ignores -e on purpose, for exactly this
+# compatibility with xterm's spelling.
+terminal() {
+    if [ -n "${WAYLAND_DISPLAY:-}" ] && command -v foot >/dev/null 2>&1; then
+        echo foot
+    elif command -v mlterm >/dev/null 2>&1; then
+        echo mlterm
+    else
+        echo xterm
+    fi
+}
+
+name="${target##*/}"
+case "$name" in
+    *.[Pp][Nn][Gg]|*.[Jj][Pp][Gg]|*.[Jj][Pp][Ee][Gg]|*.[Gg][Ii][Ff]|*.[Bb][Mm][Pp]|\
+    *.[Xx][Pp][Mm]|*.[Tt][Ii][Ff]|*.[Tt][Ii][Ff][Ff]|*.[Ww][Ee][Bb][Pp]|*.[Pp][Nn][Mm]|*.[Tt][Gg][Aa])
+        exec feh "$target"
+        ;;
+    *.[Mm][Pp]4|*.[Mm][Kk][Vv]|*.[Ww][Ee][Bb][Mm]|*.[Mm][Oo][Vv]|*.[Aa][Vv][Ii]|*.[Mm][Pp]3|*.[Oo][Gg][Gg]|*.[Ww][Aa][Vv]|*.[Ff][Ll][Aa][Cc]|*.[Oo][Pp][Uu][Ss])
+        if command -v ffplay >/dev/null 2>&1; then
+            exec ffplay -autoexit "$target"
+        fi
+        echo "xdg-open: $target: no media player in this image (ffplay ships with -x only)" >&2
+        exit 1
+        ;;
+    *.[Tt][Xx][Tt]|*.[Mm][Dd]|*.c|*.h|*.sh|*.py|*.js|*.json|*.[Xx][Mm][Ll]|*.conf|*.cfg|*.log|*.ini|*.[Cc][Ss][Vv]|*.[Yy][Mm][Ll]|*.[Yy][Aa][Mm][Ll]|*.rl)
+        exec "$(terminal)" -e "${EDITOR:-vi}" -- "$target"
+        ;;
+esac
+
+echo "xdg-open: no handler for $target" >&2
+exit 1

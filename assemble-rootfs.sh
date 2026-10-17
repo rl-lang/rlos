@@ -454,26 +454,28 @@ substep "X11 installed (config: etc/fonts/fonts.conf, etc/X11/xorg.conf.{ms,fbde
       # fail in the least legible way available when the file is absent: init
       # reports "exec /bin/sway failed" and sway reports nothing at all.
       WL_MISSING_BINS=""
-      for b in sway swaybar swaymsg foot swaybg grim; do
+      for b in sway swaybar swaymsg foot swaybg grim swaylock; do
           [[ -x "$TARGET/bin/$b" ]] || WL_MISSING_BINS="$WL_MISSING_BINS $b"
       done
       if [[ -n "$WL_MISSING_BINS" ]]; then
           errmsg "these Wayland executables are not in the image:$WL_MISSING_BINS"
-          echo "  init.c supervises sway and swaybar; sway's config execs foot." >&2
+          echo "  init.c supervises sway and swaybar; sway's config execs foot," >&2
+          echo "  spawns swaybg for the wallpaper and binds swaylock to Super+Escape." >&2
           echo "  A missing one is a black VT with no explanation." >&2
           echo "  Rebuild with ./build_wl.sh." >&2
           exit 1
       fi
-      substep "6/6 executables staged (sway swaybar swaymsg foot swaybg grim)"
+      substep "7/7 executables staged (sway swaybar swaymsg foot swaybg grim swaylock)"
 
-      # sway's config. init execs `sway -c /etc/sway/config`, and without -c
-      # sway falls back to paths under $HOME - which is uid 1000's, not root's -
-      # so this file is the difference between a configured session and sway's
-      # compiled-in defaults.
+      # sway's config. sway is built with its sysconfdir compiled in as /etc, so
+      # it finds /etc/sway/config on its own - no -c from init. Without the file
+      # sway runs on its compiled-in defaults and every binding in this image
+      # (including the terminal and the locker) is ignored.
       if [[ ! -f "$TARGET/etc/sway/config" ]]; then
           errmsg "etc/sway/config missing from wayland-dist"
-          echo "  init.c execs 'sway -c /etc/sway/config'; without it sway runs" >&2
-          echo "  on built-in defaults and every binding in this image is ignored." >&2
+          echo "  sway finds its config through the compiled-in sysconfdir /etc;" >&2
+          echo "  without it sway runs on built-in defaults and every binding in" >&2
+          echo "  this image is ignored." >&2
           exit 1
       fi
       substep "etc/sway/config staged ($(wc -l < "$TARGET/etc/sway/config") lines)"
@@ -890,6 +892,19 @@ fi
 if [[ -d "$NETTOOLS_DIST" ]]; then
     step "installing network tools from nettools-dist/ ($(du -sh "$NETTOOLS_DIST" | cut -f1))..."
     cp -a "$NETTOOLS_DIST/." "$TARGET/"
+
+    # nettools-dist flattens the HOST's libpam.so.0 for sshd-session's closure.
+    # That build looks for modules in /lib64/security, which does not exist in
+    # the guest, so a PAM consumer (the lockers) fails to load pam_unix.so with
+    # PAM_MODULE_UNKNOWN - the UI shows that as a wrong password. nettools is
+    # merged after the desktop dists, so re-assert their libpam (module dir
+    # /usr/lib64/security). Text-only images keep the host one: sshd_config
+    # says UsePAM no there, so the loader only has to resolve it.
+    if [[ "$WANT_WAYLAND" == "1" && -f "$WAYLAND_DIST/usr/lib64/libpam.so.0" ]]; then
+        cp -a "$WAYLAND_DIST/usr/lib64/libpam.so.0" "$TARGET/usr/lib64/"
+    elif [[ "$WANT_X11" == "1" && -f "$X11_DIST/usr/lib64/libpam.so.0" ]]; then
+        cp -a "$X11_DIST/usr/lib64/libpam.so.0" "$TARGET/usr/lib64/"
+    fi
 
     ln -sf /usr/bin/lsblk "$TARGET/bin/lsblk"
 
