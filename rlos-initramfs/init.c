@@ -3870,8 +3870,13 @@ if (have_xorg)
         }
         /* seatd-launch starts the daemon and execs sway with SEATD_SOCK set.
          * See build_wl.sh for why this changes the teardown behaviour. */
+        /* Both of sway's arguments have to come through. Passing only
+         * sway_argv[1] hands sway a bare "-c" with nothing after it, and sway
+         * exits printing getopt's usage text - which is exactly what the
+         * first hardware test showed. */
         char *seatd_argv[] = {
-            "seatd-launch", "--", "/bin/sway", sway_argv[1], NULL
+            "seatd-launch", "--", "/bin/sway",
+            sway_argv[1], sway_argv[2], NULL
         };
         execve("/bin/seatd-launch", seatd_argv, sway_envp);
         warn("init: seatd-launch exec failed - falling back to bare sway\n");
