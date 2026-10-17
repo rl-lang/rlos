@@ -217,11 +217,15 @@ rm -rf "$TARGET"
 mkdir -p "$TARGET"/{bin,sbin,dev,proc,sys,tmp,run,root,lib64,usr/lib,usr/lib64}
 mkdir -p "$TARGET/etc"
 
-# openssh
+# Passwords. root is "root", user is "user": both accounts carry a hash, so
+# every login prompt (and su, and sudo's password ask) expects one to be typed.
+# This used to be root locked (`!`) and user = "root"; root now has a working
+# password as well, which is what makes `su -` usable from a user shell.
 if command -v openssl > /dev/null 2>&1; then
-    USER_PW_HASH="$(openssl passwd -6 -salt rlos root)"
+    ROOT_PW_HASH="$(openssl passwd -6 -salt rlos root)"
+    USER_PW_HASH="$(openssl passwd -6 -salt rlos user)"
 else
-    fail "openssl not found on PATH - cannot hash the 'user' password"
+    fail "openssl not found on PATH - cannot hash the account passwords"
 fi
 printf 'root:x:0:0:root:/root:/bin/ash\n' > "$TARGET/etc/passwd"
 printf 'user:x:1000:1000:user:/home/user:/bin/ash\n' >> "$TARGET/etc/passwd"
@@ -243,7 +247,7 @@ for g in 'tty:5' 'lp:7' 'dialout:20' 'kmem:24' 'audio:29' 'video:44' \
          'input:999' 'render:110'; do
     printf '%s:x:%s:\n' "${g%%:*}" "${g##*:}" >> "$TARGET/etc/group"
 done
-printf 'root:!:19000:0:99999:7:::\n' > "$TARGET/etc/shadow"
+printf 'root:%s:19000:0:99999:7:::\n' "$ROOT_PW_HASH" > "$TARGET/etc/shadow"
 printf 'user:%s:19000:0:99999:7:::\n' "$USER_PW_HASH" >> "$TARGET/etc/shadow"
 chmod 600 "$TARGET/etc/shadow"
 
@@ -256,6 +260,27 @@ root	ALL=(ALL:ALL) ALL
 user	ALL=(ALL:ALL) ALL
 SUDOEOF
 chmod 440 "$TARGET/etc/sudoers"
+
+# /etc/profile - the environment every login shell starts with.
+#
+# busybox login (what getty execs on F1-F6) CLEARS the environment; HOME,
+# SHELL and PATH are set from /etc/passwd and by login itself, but TERM is not.
+# Without it every curses program in a console shell (nano, rldocs --tui,
+# rlrepl) fails with "can't open terminal" or falls back to line mode. This is
+# the one place TERM=linux can come from - getty's own TERM argument dies with
+# the rest of its environment inside login.
+#
+# XDG_RUNTIME_DIR and WAYLAND_DISPLAY so swaymsg, foot and friends typed into a
+# console shell reach a running -w desktop instead of failing to connect - the
+# same values the old direct ash prompts carried, which login would otherwise
+# take away. Harmless in text and X11 images: nothing is listening.
+cat > "$TARGET/etc/profile" << 'PROFILEEOF'
+export TERM=linux
+export LANG=C.UTF-8
+export LC_ALL=C.UTF-8
+export XDG_RUNTIME_DIR=/run/user/1000
+export WAYLAND_DISPLAY=wayland-0
+PROFILEEOF
 
 # hostname
 echo "system" > "$TARGET/etc/hostname"
@@ -390,12 +415,14 @@ if [[ "$BACKEND" == "x11" ]]; then
     mkdir -p "$TARGET/tmp/.X11-unix" "$TARGET/etc/fonts" "$TARGET/etc/X11"
     chmod 1777 "$TARGET/tmp"
     cp -f "$TARGET/usr/share/rlos/fonts.conf" "$TARGET/etc/fonts/fonts.conf"
-    for cfg in i3.config; do
-        if [[ ! -f "$SCRIPT_DIR/etc-rlos/$cfg" ]]; then
-            fail "etc-rlos/$cfg missing"
-        fi
-        cp -f "$SCRIPT_DIR/etc-rlos/$cfg" "$TARGET/etc/$cfg"
-    done
+    # i3 is started without -c (see init.c), so it finds this through the
+    # XDG_CONFIG_DIRS entry in x_envp (/etc/xdg) - and the file must be named
+    # "config", which is the name i3's search looks for.
+    if [[ ! -f "$SCRIPT_DIR/etc-rlos/i3.config" ]]; then
+        fail "etc-rlos/i3.config missing"
+    fi
+    mkdir -p "$TARGET/etc/xdg/i3"
+    cp -f "$SCRIPT_DIR/etc-rlos/i3.config" "$TARGET/etc/xdg/i3/config"
     for tmpl in ms fbdev; do
         if [[ ! -f "$TARGET/usr/share/rlos/xorg.conf.$tmpl.base" ]]; then
             fail "xorg.conf.$tmpl.base missing from x11-dist - run build_x11.sh first"
@@ -408,7 +435,7 @@ if [[ "$BACKEND" == "x11" ]]; then
       else
           fail "etc-rlos/rlos-clock missing - i3.config's status_command will fail"
       fi
-substep "X11 installed (config: etc/fonts/fonts.conf, etc/X11/xorg.conf.{ms,fbdev}.base)"
+substep "X11 installed (config: etc/fonts/fonts.conf, etc/X11/xorg.conf.{ms,fbdev}.base, etc/xdg/i3/config)"
   elif [[ "$BACKEND" == "wayland" ]]; then
       # The Wayland counterpart of the block above.
       #
@@ -462,6 +489,19 @@ substep "X11 installed (config: etc/fonts/fonts.conf, etc/X11/xorg.conf.{ms,fbde
       mkdir -p "$TARGET/etc/fonts"
       cp -f "$TARGET/usr/share/rlos/fonts.conf" "$TARGET/etc/fonts/fonts.conf"
       substep "usr/share/rlos/fonts.conf -> etc/fonts/fonts.conf"
+
+      # foot's system-wide defaults (font, dpi-aware). foot reads these through
+      # XDG_CONFIG_DIRS, whose compiled-in fallback is /etc/xdg, and a copy in
+      # ~/.config/foot/foot.ini takes precedence - so this is a default, not a
+      # lock. The file is sourced from etc-rlos/ like the X11 side's i3 config.
+      mkdir -p "$TARGET/etc/xdg/foot"
+      if [[ ! -f "$SCRIPT_DIR/etc-rlos/foot.ini" ]]; then
+          errmsg "etc-rlos/foot.ini missing"
+          echo "  foot would fall back to its compiled-in font and size." >&2
+          exit 1
+      fi
+      cp -f "$SCRIPT_DIR/etc-rlos/foot.ini" "$TARGET/etc/xdg/foot/foot.ini"
+      substep "etc/xdg/foot/foot.ini staged (a user copy overrides it)"
 
       # XDG_RUNTIME_DIR is created by init at boot, not here: it has to be owned
       # by uid 1000 with mode 0700, and doing that during assembly would bake a
@@ -935,8 +975,20 @@ if [[ -d "$IWD_DIST" ]]; then
   done
   mkdir -p "$TARGET/var/lib/iwd"
   chmod 700 "$TARGET/var/lib/iwd"
-  chmod 755 "$TARGET/usr/libexec/iwd" 2>/dev/null || true
-  substep "wireless: iwd + iwctl staged, /var/lib/iwd ready (no credentials shipped)"
+  # The directory check is not enough: an EMPTY iwd-dist/ passes [[ -d ]],
+  # cp -a copies nothing, and the old substep still reported success. That is
+  # how an -w image shipped with no iwctl and no daemon (found on hardware).
+  # A dist that exists must contain both executables; building without
+  # wireless means removing the directory, which takes the warn branch.
+  if [[ -x "$TARGET/usr/libexec/iwd" && -x "$TARGET/usr/bin/iwctl" ]]; then
+    chmod 755 "$TARGET/usr/libexec/iwd"
+    substep "wireless: iwd + iwctl staged, /var/lib/iwd ready (no credentials shipped)"
+  else
+    errmsg "iwd-dist/ exists but is empty - iwd and iwctl did not reach the image"
+    echo "  iwd-dist/ is produced by ./build_iwd.sh; an empty dist means that" >&2
+    echo "  build was interrupted. Re-run it and rebuild the image." >&2
+    exit 1
+  fi
 else
   warn "no iwd-dist/ - building without wireless"
 fi
@@ -945,8 +997,18 @@ fi
 if [[ -d "$BLUEZ_DIST" ]]; then
   step "installing BlueZ from bluesz-dist/ ($(du -sh "$BLUEZ_DIST" | cut -f1))..."
   cp -a "$BLUEZ_DIST/." "$TARGET/"
-  chmod 755 "$TARGET/usr/libexec/bluetooth/bluetoothd" 2>/dev/null || true
-  substep "bluetooth: bluetoothd + bluetoothctl + btmon staged"
+  # Same empty-dist trap as iwd above: the directory can exist and contain
+  # nothing. bluetoothd and bluetoothctl are what init.c and a login shell
+  # reach for; assert them rather than announcing success unconditionally.
+  if [[ -x "$TARGET/usr/libexec/bluetooth/bluetoothd" && -x "$TARGET/usr/bin/bluetoothctl" ]]; then
+    chmod 755 "$TARGET/usr/libexec/bluetooth/bluetoothd"
+    substep "bluetooth: bluetoothd + bluetoothctl + btmon staged"
+  else
+    errmsg "bluesz-dist/ exists but is empty - bluetoothd and bluetoothctl did not reach the image"
+    echo "  bluesz-dist/ is produced by ./build_bluez.sh; an empty dist means that" >&2
+    echo "  build was interrupted. Re-run it and rebuild the image." >&2
+    exit 1
+  fi
 else
   warn "no bluesz-dist/ - building without bluetooth"
 fi

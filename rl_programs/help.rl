@@ -152,7 +152,7 @@ fn main()
     println("  If mlterm will not open, there is no terminal to type in, so")
     println("  read the logs a different way:")
     println("")
-    println("    Ctrl+Alt+F1  text console with a shell prompt (X is on vt7)")
+    println("    Ctrl+Alt+F2  console login prompt (F1 is the desktop, F7 the log)")
     println("    log          then shows the same logs, mlterm included")
     println("")
 }

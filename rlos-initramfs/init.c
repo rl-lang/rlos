@@ -1164,9 +1164,9 @@ static int chown_tree(const char *root, uid_t uid, gid_t gid) {
 }
 
 static char *child_envp[] = {
-    /* root's home. The rescue shell on tty0 runs as root, so its history and
-     * any scratch files land in /root rather than in the user's home - which
-     * the user owns, and where root-created files would be root-owned. */
+    /* root's home. Every root child (klogd, the desktop, the daemons) starts
+     * here, so any scratch file lands in /root rather than in the user's home -
+     * which the user owns, and where root-created files would be root-owned. */
     "HOME=/root",
     "PATH=/bin:/usr/bin:/sbin:/usr/sbin",
     /*
@@ -1187,45 +1187,6 @@ static char *child_envp[] = {
     NULL,
 };
 
-/* Environment for the Ctrl-Alt-F3..F6 login shells.
- *
- * NOT child_envp. That one sets HOME=/root, deliberately, because the rescue
- * shell on tty0 runs as root. These run as uid 1000, so HOME=/root would send
- * every history write and every scratch file into a directory that user cannot
- * write - each one failing, silently, as a permission error on the console the
- * user is looking at.
- *
- * TERM=linux is the correct value for a VGA text console, and x_envp's
- * mlterm-256color would be wrong here: it advertises 256 colours and a
- * different key layout than a text VT has. That is also why the "linux" entry
- * has to exist in the image - see the terminfo loop in build_x11.sh, which
- * stages it alongside the mlterm entries. Without it TERM=linux resolves to
- * nothing and every curses program in these shells (nano, rldocs --tui, rlrepl)
- * fails with "can't open terminal" or falls back to line mode.
- *
- * USER and LOGNAME are set because child_envp does not set them either and a
- * login shell should not have to guess. */
-static char *vt_shell_envp[] = {
-    "HOME=/home/user",
-    "PATH=/bin:/usr/bin:/sbin:/usr/sbin",
-    "SHELL=/bin/ash",
-    "TERM=linux",
-    "LANG=C.UTF-8",
-    "LC_ALL=C.UTF-8",
-    "USER=user",
-    "LOGNAME=user",
-    /* init creates this 0700 and owned by uid 1000 before either desktop
-     * starts. Without it, running sway by hand from a VT shell dies on
-     * "XDG_RUNTIME_DIR is not set" - which reads as sway being broken when in
-     * fact the shell is incomplete, and that is exactly the moment someone
-     * would go looking in order to reproduce a compositor fault. */
-    "XDG_RUNTIME_DIR=/run/user/1000",
-    /* So swaymsg and friends reach a running compositor instead of failing to
-     * connect. Harmless when no desktop is up: nothing is listening. */
-    "WAYLAND_DISPLAY=wayland-0",
-    NULL,
-};
-
 /* ------------------------------------------------------------------ *
  * X session
  *
@@ -1237,7 +1198,7 @@ static char *vt_shell_envp[] = {
  * The value here is what the X clients other than the terminal read, and i3 and
  * i3bar ignore TERM entirely. The terminal itself overwrites TERM in its own
  * child: mlterm takes it from its "termtype" setting, which the staged
- * /usr/etc/mlterm/main pins to mlterm-256color, so the shell it execs gets the
+ * /etc/mlterm/main pins to mlterm-256color, so the shell it execs gets the
  * entry that matches what mlterm emits. Keep this in step with that file - both
  * are shipped by build_x11.sh, and both entries are compiled into the image.
  *
@@ -1255,7 +1216,7 @@ static char *x_envp[] = {
     /* ash, not rlsh - see the note on child_envp above for why. */
     "SHELL=/bin/ash",
     /* mlterm-256color, not xterm-256color: the image ships a real mlterm
-     * terminfo, and the staged usr/etc/mlterm/main tells mlterm to use this
+     * terminfo, and the staged /etc/mlterm/main tells mlterm to use this
      * name for its own shell, so this is the entry that matches what the
      * terminal emits. This line is for the other X clients that read TERM;
      * i3 and i3bar ignore it. */
@@ -1290,9 +1251,11 @@ static char *x_envp[] = {
     "XCURSOR_THEME=Bibata-Modern-Ice",
     "XCURSOR_SIZE=24",
     /* The desktop runs as uid 1000, so the per-user XDG roots are the user's
-     * home and not root's. i3's socket lives in XDG_RUNTIME_DIR (below);
-     * XDG_CONFIG_HOME matters because i3 looks for a per-user config there
-     * before the -c path we hand it, and mlterm reads XDG_CONFIG_DIRS. */
+     * home and not root's. i3's socket lives in XDG_RUNTIME_DIR (below).
+     * XDG_CONFIG_HOME is where i3 looks for a user-level config first,
+     * falling back to XDG_CONFIG_DIRS (below) - /etc/xdg, where the staged
+     * system config lives now that i3 is started without -c. mlterm ignores
+     * both: it reads $HOME/.config/mlterm, then ~/.mlterm. */
     "XDG_DATA_HOME=/home/user/.local/share",
     "XDG_CONFIG_HOME=/home/user/.config",
     "XDG_DATA_DIRS=/usr/local/share:/usr/share",
@@ -1468,7 +1431,8 @@ static void drop_to_user(void) {
 }
 
 /* Take ownership of, and lock down, the files that govern privilege
- * escalation: sudo itself and its policy file.
+ * escalation: sudo itself, its policy file, and the image's one other
+ * setuid-root helper, seatd-launch.
  *
  * sudo refuses to run unless it is setuid root AND owned by uid 0, and it
  * refuses to read a sudoers file that is not root-owned 0440. The initramfs is
@@ -1478,12 +1442,22 @@ static void drop_to_user(void) {
  * rather than trusting the archive is also self-healing: if a rebuild ever
  * stages sudo with the wrong bits, the running system still comes up correct.
  *
+ * seatd-launch is setuid root on purpose: the compositor session runs as
+ * uid 1000 and stays there, while the seatd daemon seatd-launch starts needs
+ * root to hold DRM master and to chown the control socket to the user.
+ * seatd-launch spends the privilege on the daemon and then drops back to the
+ * invoking real uid before exec'ing the client (its "Drop privileges"
+ * block), so everything downstream of the compositor - foot, every bind -
+ * is uid 1000. Staged by an unprivileged build like sudo, so the bit has to
+ * be set here.
+ *
  * /etc/shadow is locked down for the same reason and because it holds password
  * hashes that no non-root process has any business reading. */
-static void secure_sudo_files(void) {
+static void secure_privileged_files(void) {
   struct { const char *path; uid_t uid; gid_t gid; mode_t mode; } f[] = {
     { "/usr/bin/sudo",         0, 0, 04755 },
     { "/usr/bin/sudoedit",     0, 0, 04755 },
+    { "/bin/seatd-launch",     0, 0, 04755 },
     { "/etc/sudoers",          0, 0, 00440 },
     { "/etc/sudoers.d",        0, 0, 00750 },
     { "/etc/passwd",           0, 0, 0644 },
@@ -1567,33 +1541,45 @@ static void run_x_helper(const char *path) {
 }
 /* X_CONF is defined next to gen_input_config() above, together with
  * X_BASE_CONF, because that function is what writes it. */
-/* THE VIRTUAL TERMINAL LAYOUT. Fixed here and relied on by start_vt_shells()
-   * below, which puts login shells on tty3-tty6, so the two must agree.
-   *
-   *   Ctrl-Alt-F1   tty1   boot log + the root rescue shell
-   *   Ctrl-Alt-F2   tty2   the X11 desktop, or a login shell when the image
-   *                          was built without -x and has no Xorg to run
-   *   Ctrl-Alt-F3   tty3   login shell as uid 1000
-   *   Ctrl-Alt-F4   tty4   login shell as uid 1000
-   *   Ctrl-Alt-F5   tty5   login shell as uid 1000
-   *   Ctrl-Alt-F6   tty6   login shell as uid 1000
-   *
-   * This used to be vt7 for X, with 2-6 left empty. The number is not arbitrary
-   * either way: what matters is that X does not share a VT with anything that has
-   * to survive it (see the note where Xorg is exec'd), and that F1 lands on the
-   * console that fbcon is actually bound to. F1 does, because console=tty0 makes
-   * fbcon attach to whichever VT is foreground at boot, which is tty1 - /dev/tty0
-   * is not a device, it is the current foreground VT, which is why the comments
-   * here say tty0 while the screen the user sees is tty1.
-   *
-   * X is on vt2 rather than vt7 so the extra shells fit on consecutive keys
-   * F3-F6 with no gap, which is the whole point of them being there. */
-  #define X_VT      "vt2"
-  /* First and last extra login-shell VT. Inclusive. The first is VT_SHELL_FIRST
-   * when X has vt2, and VT_SHELL_MIN when the image has no X and vt2 is free. */
-  #define VT_SHELL_MIN   2
-  #define VT_SHELL_FIRST 3
-  #define VT_SHELL_LAST  6
+/* THE VIRTUAL TERMINAL LAYOUT. Fixed here and relied on by start_vt_getty()
+ * below, which puts login prompts on tty2-tty6, so the two must agree.
+ *
+ *   Ctrl-Alt-F1   tty1   the desktop when the image has one (Xorg on X_VT;
+ *                          sway claims this VT by itself), otherwise - and if
+ *                          a desktop is present but never comes up - a login
+ *                          prompt
+ *   Ctrl-Alt-F2   tty2   login prompt
+ *   Ctrl-Alt-F3   tty3   login prompt
+ *   Ctrl-Alt-F4   tty4   login prompt
+ *   Ctrl-Alt-F5   tty5   login prompt
+ *   Ctrl-Alt-F6   tty6   login prompt
+ *   Ctrl-Alt-F7   tty7   init's log. No process is attached here on purpose,
+ *                          so nothing can type over it or die in it; getty is
+ *                          deliberately not started on this VT.
+ *
+ * The prompts are busybox getty + login, so a VT without a desktop is never an
+ * unauthenticated root shell: F1-F6 all ask for a username first. Until the
+ * log console moved to F7 these were root shells (F1) and uid-1000 shells
+ * (F2-F6) - see start_vt_getty() for why that changed.
+ *
+ * The desktop's number is not arbitrary. What matters is that it does not share
+ * a VT with anything that has to survive it (see the note where Xorg is
+ * exec'd), and that F1 lands on the console fbcon is actually bound to. F1
+ * does, because console=tty0 makes fbcon attach to whichever VT is foreground
+ * at boot, which is tty1 - /dev/tty0 is not a device, it is the current
+ * foreground VT, which is why the comments here say tty0 while the screen the
+ * user sees is tty1.
+ *
+ * The desktop used to take vt2 with the F1 rescue shell and F3-F6 ash shells
+ * around it. Moving it to F1 puts the prompts on consecutive keys F2-F6 with no
+ * gap, which is the whole point of them being there. */
+  #define X_VT      "vt1"
+  /* First and last getty VT. Inclusive. F1 is not in the range: it belongs to
+   * the desktop when the image has one, and the desktop-failure path in main()
+   * adds the F1 prompt back only when no compositor is running. F7 is above the
+   * range because it is the log. */
+  #define VT_GETTY_FIRST 2
+  #define VT_GETTY_LAST  6
 
 /* How many times to try Xorg before dropping to the text console. This is
  * the important safety net: with X as the default boot, a broken xorg.conf
@@ -2831,14 +2817,14 @@ static struct supervised procs[18];
    * only thing standing between a future nineteenth entry and a stack smash is
    * somebody counting correctly.
    *
-   * The X11 backend used 11 of 12: klogd, ash, Xorg, i3, mlterm, iwd, bluetoothd
-   * and the four VT shells. The Wayland backend replaces Xorg/i3/mlterm (3) with
-   * sway/swaybar/swaybg (3) and adds seatd, so the peak is the same today - but
-   * that is a coincidence of arithmetic, not a property worth relying on. It was
-   * 12 while the comment above claimed "no plausible thirteenth child", and the
-   * Wayland branch made that false. 18 leaves real headroom, and the bound is
-   * what actually protects the array: exceeding it drops a child loudly rather
-   * than letting entries alias each other. */
+   * The X11 backend uses 11 of 18: klogd, Xorg, i3, mlterm, iwd, bluetoothd and
+   * the five getty prompts F2-F6. When X does not come up the i3+mlterm pair is
+   * replaced by the F1 getty, so the peak is unchanged. Wayland swaps
+   * Xorg/i3/mlterm for sway/swaybar and uses 10. The earlier comment claimed
+   * "no plausible thirteenth child" while the real count was already 12, and
+   * the Wayland branch made that false; 18 leaves real headroom, and the bound
+   * is what actually protects the array: exceeding it drops a child loudly
+   * rather than letting entries alias each other. */
   #define SUPERVISE_MAX 18
 /* Variadic because a struct initialiser contains commas, which a three-arg macro
  * would split into separate arguments. No braces around __VA_ARGS__: the call
@@ -2855,6 +2841,56 @@ static struct supervised procs[18];
        ? ((tbl)[(*(cnt))++] = (struct supervised)__VA_ARGS__, 1)      \
        : (warn("init: supervised table full, dropping a child\n"), 0))
 
+
+/* One login prompt on a VT: busybox getty, which opens the tty, prints
+ * /etc/issue, reads a login name and execs login. Registered as a supervised
+ * child rather than exec'd, so a prompt that dies is restarted.
+ *
+ * "ttyN" as the argument (not "/dev/ttyN") is what busybox's parser expects;
+ * 115200 is a formality on a VT - the kernel ignores line speed on virtual
+ * consoles - but getty requires a baud argument ("too few arguments" without).
+ *
+ * ctty is NULL on purpose: getty creates its own session and then opens
+ * /dev/ttyN in place of fd 0, dups it to 1 and 2 and calls TIOCSCTTY itself
+ * (see open_tty() and main() in loginutils/getty.c). Passing "/dev/ttyN"
+ * through init's own ctty path would do half of that first and make getty's
+ * setsid() fail - a path getty handles, but needlessly.
+ *
+ * as_user is 0: login must run as root to check the password and setuid to the
+ * user. Dropping privileges here would break every prompt.
+ *
+ * The per-VT argv arrays are static because procs[] keeps pointers to them for
+ * the lifetime of the run - the same storage-duration requirement that fixed
+ * the argv corruption bug (see the table note in main()). Login clears the
+ * environment (SETUP_ENV_CLEARENV, so HOME/TERM/PATH come from /etc/passwd,
+ * /etc/profile and login itself), which is why one shared child_envp is
+ * correct even though every prompt behaves like an interactive login. */
+static void start_vt_getty(int vt) {
+  /* Indexed by VT number; slot 0 is unused so callers pass the number
+   * directly. */
+  static struct {
+    char name[8];   /* "getty2" - init's own name for the child, in messages
+                     * and the rlos.dumpcfg table dump */
+    char tty[8];    /* "tty2" - getty's argument, relative to /dev */
+    char *argv[4];
+  } gettys[VT_GETTY_LAST + 1];
+
+  if (vt < 1 || vt > VT_GETTY_LAST)
+    return;
+
+  char *q = put_str(gettys[vt].name,
+                    gettys[vt].name + sizeof(gettys[vt].name), "getty");
+  *put_dec(q, vt) = '\0';
+  q = put_str(gettys[vt].tty, gettys[vt].tty + sizeof(gettys[vt].tty), "tty");
+  *put_dec(q, vt) = '\0';
+  gettys[vt].argv[0] = "getty";
+  gettys[vt].argv[1] = gettys[vt].tty;
+  gettys[vt].argv[2] = "115200";
+  gettys[vt].argv[3] = NULL;
+
+  supervise(procs, &nprocs, { gettys[vt].name, "/bin/getty", gettys[vt].argv,
+      child_envp, 0, 0, -1, 0, 0, NULL });
+}
 
 /* ---------------------------------------------------------------------------
  * Orderly shutdown and reboot, driven by signals.
@@ -3065,9 +3101,33 @@ static void do_shutdown(int mode) {
    * on the cmdline. Forcing (5,1) pinned stdin/stdout/stderr to ttyS0
    * regardless of what the bootloader asked for, so the shell and klogd
    * stayed invisible on the framebuffer even once one existed. */
-  int fd = open("/dev/console", O_RDWR);
+  /* Init's stdio goes to tty7, the log console - not to /dev/console.
+   *
+   * /dev/console follows the foreground VT, which is F1: the desktop's VT and
+   * the first login prompt. Every init message - service starts, child deaths,
+   * the warnings that explain a failed start - would land on top of whatever
+   * is running there, and after the first screenful would be unreadable
+   * exactly when it is wanted. F7 has no process attached (see the VT layout
+   * above), so its scrollback is the boot log, frozen, and nothing can type
+   * over it or die in it.
+   *
+   * rlos.diag keeps /dev/console: that mode exists so its report is visible on
+   * the screen the user is already looking at (see the diag branch below), and
+   * nobody would think to look on F7 for it.
+   *
+   * Opening /dev/tty7 can fail - a kernel built with few VTs has no such
+   * device - and that must not take the boot down, so /dev/console is the
+   * fallback. */
+  int to_log_vt = 0;
+  int fd = -1;
+  if (strstr(read_cmdline(), "rlos.diag") == NULL) {
+    fd = open("/dev/tty7", O_RDWR);
+    to_log_vt = (fd >= 0);
+  }
+  if (fd < 0)
+    fd = open("/dev/console", O_RDWR);
   if (fd < 0) {
-    warn("init: no /dev/console, keeping inherited fds\n");
+    warn("init: no /dev/tty7 (log console) or /dev/console, keeping inherited fds\n");
   } else {
     dup2(fd, 0);
     dup2(fd, 1);
@@ -3077,7 +3137,18 @@ static void do_shutdown(int mode) {
   }
 
   setsid();
-  ioctl(0, TIOCSCTTY, 1);
+  /* Claim the controlling terminal only when the console is the target.
+   *
+   * tty7 deliberately stays unclaimed. TIOCSCTTY would make init's process
+   * group the foreground group of F7, and every child without its own ctty
+   * (klogd, Xorg, sway, iwd, bluetoothd...) stays in init's group - so one
+   * stray Ctrl-C typed on the log screen would signal the whole set of them,
+   * and init's own handler reads SIGINT as "poweroff" and SIGQUIT as "reboot"
+   * (see install_signal_handlers()). With no session owner the kernel drops
+   * keyboard signals on that VT, which is exactly right for a screen that is
+   * meant to be read, not typed into. */
+  if (!to_log_vt)
+    ioctl(0, TIOCSCTTY, 1);
 
   /* Before the first warn(), which is the console-geometry line below. That
    * call already tries to write init.log, so /log has to exist by now or the
@@ -3198,17 +3269,19 @@ static void do_shutdown(int mode) {
     xmkdir("/tmp/fccache", 01777);
 #endif
 
-  /* Accounts and privilege. secure_sudo_files() first: sudo checks its own
-   * ownership and setuid bit at startup, so it has to be correct before the
-   * first user process can try to run it. */
-  secure_sudo_files();
+    /* Accounts and privilege. secure_privileged_files() first: both setuid
+     * helpers have to be root-owned before the first user process can run
+     * them - sudo checks that itself, and for seatd-launch the kernel only
+     * honours the bit when the owner is root. */
+    secure_privileged_files();
 
     /* The atom image next, for the same reason: it must be root-owned before any
      * user process can reach it, because unpacking it is a user-facing thing to
      * do and it is what every container's root filesystem comes from. */
     secure_atom_image();
 
-  /* root's home for the rescue shell; the user's home below. */
+  /* root's home; the root children (klogd, the desktop) start there and any
+   * scratch file they make belongs there. The user's home is below. */
   xmkdir("/root", 0700);
   xmkdir("/home", 0755);
   xmkdir("/home/user", 0755);
@@ -3226,7 +3299,7 @@ static void do_shutdown(int mode) {
    * ~/programs` made it go away.
    *
    * Done here rather than in the build because init cannot assume how the tree
-   * was produced - same reasoning as secure_sudo_files() above.
+   * was produced - same reasoning as secure_privileged_files() above.
    */
   chown_tree("/home/user", USER_UID, USER_GID);
   /* fontconfig's cache is written by the desktop, which now runs as the user;
@@ -3250,10 +3323,11 @@ static void do_shutdown(int mode) {
    * reach the console plain, and klogd reprints everything else from
    * /dev/kmsg with per-priority colors. It is the first child in the table
    * below so the backlog is dumped before anything else draws. */
-   /* Supervised children. In X mode this is klogd, Xorg, i3 and mlterm; if X
-    * will not start we fall back to the text session and run klogd + the
-    * shell instead. needs_x gates i3 and mlterm on the display actually being
-    * up, so a dead X server cannot put them into a crash loop.
+    /* Supervised children. In -x mode that is klogd, Xorg, i3, mlterm, the
+     * F2-F6 login prompts and the daemons; -w swaps Xorg/i3/mlterm for
+     * sway/swaybar. If no compositor comes up, klogd, the prompts and an F1
+     * prompt run instead. needs_x gates i3 and mlterm on the display actually
+     * being up, so a dead X server cannot put them into a crash loop.
     *
     * needs_net is the same trick one level down, and it exists because DHCP was
     * blocking boot: sshd used to be registered only when an address had already
@@ -3278,7 +3352,7 @@ static void do_shutdown(int mode) {
      *
      * This is not a style preference; it is the whole explanation for a defect
    * that spent a long time looking like something else. A compound literal -
-   * (char *[]){ "i3", "-c", ..., NULL } - inside a function has AUTOMATIC storage
+   * (char *[]){ "i3", ..., NULL } - inside a function has AUTOMATIC storage
    * duration associated with the ENCLOSING BLOCK (C11 6.5.2.5p5). The i3 and
    * mlterm entries are registered inside the `if (use_x) { ... }` block, so their
    * literals die when that block closes, while procs[].argv still points at them.
@@ -3302,8 +3376,7 @@ static void do_shutdown(int mode) {
    * find, and the table dump is what turned it into an obvious one.
    */
     static char *klogd_argv[]       = { "klogd", NULL };
-    static char *ash_argv[]         = { "ash", "-i", NULL };
-  static char *i3_argv[]          = { "i3", "-c", "/etc/i3.config", NULL };
+  static char *i3_argv[]          = { "i3", NULL };
   static char *mlterm_argv[]      = { "mlterm", NULL };
   static char *iwd_argv[]         = { "/usr/libexec/iwd", NULL };
   static char *bluetoothd_argv[]  = { "/usr/libexec/bluetooth/bluetoothd",
@@ -3311,100 +3384,39 @@ static void do_shutdown(int mode) {
   supervise(procs, &nprocs, { "klogd", "/sbin/klogd",
       klogd_argv, child_envp, 0, 0, -1, 0, 0, NULL });
 
-  /*
-   * A shell on the text console, always, so a broken terminal is never a dead
-   * end.
-   *
-   * WHY THIS IS NEEDED. The obvious way to look at a log is to run `log` in a
-   * terminal. That works right up until the thing being diagnosed IS the
-   * terminal: mlterm failing to start means no window to type `log` into,
-   * so the instruction to run it is unusable. Without this, the only way to
-   * read the file explaining why mlterm died would be to fix mlterm
-   * first. That is the same trap rlos.diag exists further down to escape, one
-   * level out: diag needs a kernel command line edit, this needs only
-   * Ctrl+Alt+F1.
-   *
-   * It runs on tty0, which X does not touch - X is on vt2 (X_VT) precisely so
-   * this console stays usable, so the two never compete for the screen and the
-   * kernel messages init and klogd print are still there to read.
-   *
-   * needs_x is 0: this must work precisely when X did not come up, which is
-   * when it is most needed. ash reads no DISPLAY and needs no graphics.
-   */
-supervise(procs, &nprocs, { "ash", "/bin/ash",
-        ash_argv, child_envp, 0, 0, -1, 0, 0, NULL });
 
-  /* Login shells on the remaining VTs: Ctrl-Alt-F3 through F6.
+  /* Login prompts on F2-F6, always. F1 belongs to the desktop when the image
+   * has one, so a prompt there is added only by the compositor-failure path at
+   * the end of the desktop setup - the one branch that covers both "no desktop
+   * in this image" and "a desktop exists but never came up".
    *
-   * They exist because there is no getty in this image, and without something
-   * attached a VT is simply blank - switching to F3 on a machine with only the
-   * tty1 shell and X on vt2 gives a black screen and no way back to a prompt,
-   * which looks exactly like a hang. Without X there is no vt2 to skip past, so
-   * the range starts one key earlier (see VT_SHELL_MIN).
+   * WHY PROMPTS AT ALL. A VT with nothing attached is blank - switching to F3
+   * on a machine with no getty gives a black screen and no way back to a
+   * prompt, which looks exactly like a hang - and a desktop that fails must
+   * never be a dead end. The obvious way to read a log is `log` in a terminal,
+   * but that is useless when the terminal is what failed; Ctrl+Alt+F2 gets a
+   * prompt that does not depend on the desktop at all.
    *
-   * Registered here rather than after the X block, and deliberately outside the
-   * use_x branch, for the same reason the rescue shell above is: these must work
-   * precisely when X did not come up, which is when a text console is most
-   * wanted. needs_x is 0 throughout.
+   * WHY getty AND NOT A SHELL. getty+login asks for a username and password
+   * before it hands anything out, so F1-F6 are never unauthenticated root
+   * shells - which is what the always-resident ash prompts this replaces were.
+   * A desktop that did not start is a reason to offer a login, not a reason to
+   * skip it.
    *
-   * They run as uid 1000, not root. The rescue shell on tty1 stays root - it is
-   * the last thing standing if the desktop fails - but that many always-resident
-   * root shells on keys a user can reach by muscle memory is more than the
-   * situation needs. sudo is present and working (secure_sudo_files() above), so
-   * admin work is one prefix away.
-   *
-   * vt_shell_envp rather than child_envp, because child_envp sets HOME=/root: a
-   * uid-1000 shell would try to keep its history and create scratch files in a
-   * directory it does not own, and every one of those would fail. TERM=linux is
-   * right here - these are VGA text consoles, and the x_envp value
-   * (mlterm-256color) would describe capabilities the console does not have.
-   *
-   * ash_argv is shared by all of them deliberately: it has static storage
-   * duration, which is the property that fixed the argv corruption bug, and
-   * sharing one array for several children that take no arguments cannot make
-   * it stale. Only name and ctty differ per entry. */
-  /* F2 is the desktop only when the image has one. Built without -x there is
-   * no Xorg, so vt2 is free and becomes just another login shell rather than a
-   * dead key next to four that work. */
-int have_xorg = (access("/bin/Xorg", X_OK) == 0);
-    /* sway claims a VT the same way Xorg does, so the F2 desktop slot belongs to
-     * whichever compositor is in the image. Keying this on Xorg alone was fine
-     * only because there was no other option; with -w there are two, and an
-     * image carrying both (which the -x -w rejection in assemble-rootfs.sh
-     * forbids, but init cannot assume the image was built by that script) would
-     * put sway and the VT shells on the same terminal. */
-    int have_sway = (access("/bin/sway", X_OK) == 0);
-    int have_desktop = have_xorg || have_sway;
-    int vt_shell_first = have_desktop ? VT_SHELL_FIRST : VT_SHELL_MIN;
-    int n_vt_shells = VT_SHELL_LAST - vt_shell_first + 1;
+   * Registered here, outside the compositor block, because they must work
+   * precisely when the desktop did not come up. needs_x is 0 throughout. */
+  for (int vt = VT_GETTY_FIRST; vt <= VT_GETTY_LAST; vt++)
+    start_vt_getty(vt);
 
-  /* Per-VT storage for the table below. It has to outlive this scope: procs[]
-   * keeps a pointer to both strings for the lifetime of the run, and a loop-local
-   * array would be reused by the next iteration. Sized for the larger of the two
-   * ranges (VT_SHELL_MIN..VT_SHELL_LAST); with X present the first entries are
-   * simply never filled. */
-  static struct {
-    char name[8];   /* "tty3" - strcmp()'d in the loop and in the table dump, so
-                     * deliberately NOT "/dev/tty3" */
-    char ctty[16];  /* "/dev/tty3" */
-  } vt_shells[VT_SHELL_LAST - VT_SHELL_MIN + 1];
-
-  for (int k = 0; k < n_vt_shells; k++) {
-    int vt = vt_shell_first + k;
-    char *q = put_str(vt_shells[k].name, vt_shells[k].name + sizeof(vt_shells[k].name), "tty");
-    *put_dec(q, vt) = '\0';
-    q = put_str(vt_shells[k].ctty, vt_shells[k].ctty + sizeof(vt_shells[k].ctty), "/dev/tty");
-    *put_dec(q, vt) = '\0';
-    supervise(procs, &nprocs, { vt_shells[k].name, "/bin/ash",
-        ash_argv, vt_shell_envp, 0, 1, -1, 0, 0, vt_shells[k].ctty });
-  }
-if (have_xorg)
-      warn("init: vt layout: F1 log, F2 desktop, F3-F6 shells\n");
-    else if (have_sway)
-      warn("init: vt layout: F1 log, F2 sway, F3-F6 shells (Wayland backend)\n");
-    else
-      warn("init: vt layout: F1 log, F2-F6 shells (no desktop: built without -x or -w)\n");
-
+  int have_xorg = (access("/bin/Xorg", X_OK) == 0);
+  int have_sway = (access("/bin/sway", X_OK) == 0);
+  if (have_xorg)
+    warn("init: vt layout: F1 i3 desktop, F2-F6 login, F7 log\n");
+  else if (have_sway)
+    warn("init: vt layout: F1 sway desktop, F2-F6 login, F7 log (Wayland backend)\n");
+  else
+    warn("init: vt layout: F1-F6 login, F7 log (no desktop: built without -x or -w)\n");
+  
   int use_x = 0;
   /* Declared next to use_x rather than at the point of use, because the client
    * branch below tests it and the compositor block in between is what sets it. */
@@ -3506,14 +3518,14 @@ if (have_xorg)
      * one place with the rest of the X setup, and after /run exists.
      *
      * On failure the desktop cannot come up at all, so say so plainly and
-     * continue rather than pretending: the text console on tty0 is still
-     * there, and the log line is on it. */
+     * continue rather than pretending: the login prompts on F2-F6 are still
+     * there, and this warning itself is in the log on F7. */
     if (make_x_cookie()) {
       warn("init: X display authenticated (MIT-MAGIC-COOKIE-1, -ac not needed)\n");
     } else {
       warn("init: WARNING - no X cookie; the desktop will not start.\n");
       warn("init:   i3 and mlterm will fail to open the display.\n");
-      warn("init:   Use the text console on tty0. (rlin for input diagnostics)\n");
+      warn("init:   Use Ctrl+Alt+F2 for a login prompt. (rlin for input diagnostics)\n");
     }
     /* Report which driver gen_input_config() settled on. Worth saying plainly
      * because it is the thing under test: on hardware with i915 bound this
@@ -3556,12 +3568,10 @@ if (have_xorg)
      * terminal into its own mode, and a killed or crashed Xorg never gets to
      * restore it - the leftover state makes the next rlsh read EOF and exit
      * immediately, so a failed X start takes the text shell down with it.
-     * On a separate VT the text console on tty0 is never touched, and
-     * Ctrl-Alt-F1 gets you back to it. F2 is the desktop; F3-F6 are the extra
-     * login shells (see the VT layout at X_VT). Only F1 works as the escape
-     * hatch - there is no getty in this image, so a VT with nothing attached
-     * to it is simply blank, which is why an earlier version of this comment
-     * offering "F1/F2" was wrong about the second key. */
+     * On a separate VT the text console is never touched, and Ctrl-Alt-F2
+     * through F6 always reach a login prompt (see the VT layout at X_VT).
+     * If X never comes up, init registers a prompt on F1 itself - the
+     * fallback branch at the end of the compositor setup. */
     /* static, not an automatic array: procs[] keeps a pointer to this and the
      * supervision loop reads it long after this block has exited. As a stack
      * array its storage was reused by the i3/mlterm entries further down, so a
@@ -3818,18 +3828,29 @@ if (have_xorg)
       if (chown("/run/user/1000", 1000, 1000) < 0)
         warn("init: could not chown /run/user/1000 - sway will not be able to bind its socket\n");
 
-      /* No seatd. libseat can open a DRM node directly given the right
-       * permissions, and running seatd as root while sway runs as uid 1000
-       * would mean the compositor talking to a privileged helper it does not
-       * need in this image. wlroots' direct backend logs that it is using the
-       * direct session, which is the correct behaviour here. */
+      /* The seat comes from a real seatd daemon rather than libseat's
+       * builtin backend. wlroots needs DRM master, and the session must not
+       * hold the privilege that takes; seatd (root, started by the
+       * setuid-root seatd-launch below) takes master and hands sway the fd.
+       * That fd-passing is what lets the whole session run as the user. */
 
-      /* -c /etc/sway/config given explicitly, for the same reason i3 is given
-       * -c in the X11 branch: sway looks in a list of paths relative to $HOME
-       * before the system config, and $HOME belongs to the user, so an
-       * explicit absolute path is what actually makes the staged config load. */
+      /* No -c. sway's search ends at SYSCONFDIR/sway/config, and build_wl.sh
+       * now compiles sway with sysconfdir=/etc (via its guestpaths helper),
+       * so the staged /etc/sway/config is found on its own. The -c that used
+       * to be here existed only because the binary otherwise embedded the
+       * build host's prefix. Dropping it is also what lets a user override
+       * at ~/.config/sway/config take effect. */
       static char *sway_argv[] = {
-          "/bin/sway", "-c", "/etc/sway/config", NULL,
+          "/bin/sway", NULL,
+      };
+      /* seatd-launch starts the daemon and execs sway with SEATD_SOCK set.
+       * See build_wl.sh for why this changes the teardown behaviour. It is
+       * setuid root (secure_privileged_files): init's child has already
+       * dropped to uid 1000, seatd-launch spends the privilege on the seatd
+       * daemon, and drops back to uid 1000 before exec'ing sway. The same
+       * argv is registered for restarts, so a respawn takes the same path. */
+      static char *seatd_argv[] = {
+          "seatd-launch", "--", "/bin/sway", NULL
       };
 
       pid_t sw = fork();
@@ -3868,16 +3889,18 @@ if (have_xorg)
           if (slog > 2)
             close(slog);
         }
-        /* seatd-launch starts the daemon and execs sway with SEATD_SOCK set.
-         * See build_wl.sh for why this changes the teardown behaviour. */
-        /* Both of sway's arguments have to come through. Passing only
-         * sway_argv[1] hands sway a bare "-c" with nothing after it, and sway
-         * exits printing getopt's usage text - which is exactly what the
-         * first hardware test showed. */
-        char *seatd_argv[] = {
-            "seatd-launch", "--", "/bin/sway",
-            sway_argv[1], sway_argv[2], NULL
-        };
+        /* sway takes no arguments: /etc/sway/config is found through the
+         * sysconfdir build_wl.sh compiles in, so there is nothing to forward
+         * here. (The hand-forwarding this replaced once shipped sway a bare
+         * "-c" with nothing after it - see git history for that bug.) */
+        /* The first sway is forked by hand, so it does not pass through the
+         * as_user drop every supervised child gets - it has to drop here.
+         * Everything needing root is already done (the log file is open);
+         * the exec below lands on setuid-root seatd-launch, which spends the
+         * privilege on the seatd daemon and drops back to this uid before
+         * exec'ing sway. Without this the whole session - foot included -
+         * comes up as root, which is how it shipped until now. */
+        drop_to_user();
         execve("/bin/seatd-launch", seatd_argv, sway_envp);
         warn("init: seatd-launch exec failed - falling back to bare sway\n");
         execve("/bin/sway", sway_argv, sway_envp);
@@ -3895,8 +3918,8 @@ if (have_xorg)
        * that means "a client can connect", which is what "did the desktop
        * start" actually has to mean. */
       if (wait_for_path(WL_SOCKET_PATH, SOCK_WAIT_MS)) {
-        supervise(procs, &nprocs, { "sway", "/bin/sway",
-            sway_argv, sway_envp, 1, 1, sw, 0, 0, NULL });
+        supervise(procs, &nprocs, { "sway", "/bin/seatd-launch",
+            seatd_argv, sway_envp, 1, 1, sw, 0, 0, NULL });
         use_sway = 1;
         warn("init: Wayland display is up (");
         warn(WL_DISPLAY_NAME);
@@ -3950,15 +3973,17 @@ if (have_xorg)
      * Either alone fixes it; both are cheap, so both are done. */
     run_x_helper("/usr/bin/setrootcursor");
 
-    /* i3, not dwm. -c is given explicitly with an absolute path because i3
-     * refuses to start without a config (src/config.c:235) and otherwise looks
-     * only at paths relative to $HOME, which is not worth depending on here. */
+    /* i3, not dwm. No -c: i3 dies when it finds no config at all
+     * (src/config.c:235), so the search order is load-bearing. It looks at
+     * $XDG_CONFIG_HOME/i3/config (a user override), then ~/.i3/config, then
+     * every $XDG_CONFIG_DIRS entry - which x_envp points at /etc/xdg, where
+     * assemble-rootfs.sh stages the system config. */
     supervise(procs, &nprocs, { "i3", "/bin/i3",
         i3_argv, x_envp, 1, 1, -1, 0, 0, NULL });
     /* mlterm. No -e / shell argument on purpose: with none, mlterm execs the
      * login shell named by $SHELL, and init sets SHELL=/bin/ash in x_envp; the
      * terminal does not need to be told what init already told the session.
-     * Font, type engine and termtype come from the staged /usr/etc/mlterm/
+     * Font, type engine and termtype come from the staged /etc/mlterm/
      * config, which build_x11.sh writes - see the note there for why the
      * upstream defaults do not work in this guest. */
 supervise(procs, &nprocs, { "mlterm", "/bin/mlterm",
@@ -3996,10 +4021,20 @@ supervise(procs, &nprocs, { "mlterm", "/bin/mlterm",
         warn("init:   built without -x or -w (see assemble-rootfs.sh); rebuild with\n");
         warn("init:   -x for the i3 + mlterm desktop, or -w for sway.\n");
       }
-    /* No shell is added here: the rescue ash registered earlier runs on tty0
-     * unconditionally, so this branch already has a prompt waiting. Adding a
-     * second one would put two interactive ashes on the same console, racing
-     * for the keyboard, and neither would be reliably usable. */
+      /* A login prompt on F1, now known to be needed.
+       *
+       * This branch is the one place it can be added without guessing: it is
+       * reached both when the image has no compositor at all and when one
+       * exists but never came up, and those are exactly the cases where F1 is
+       * free. When a compositor is running, F1 belongs to it and no prompt is
+       * registered there.
+       *
+       * getty + login rather than the root ash this used to be: a desktop that
+       * did not start is a reason to offer a login, not a reason to hand out
+       * an unauthenticated root shell. The F2-F6 prompts registered earlier
+       * are there for the same purpose; this one just puts the first key back
+       * in service. */
+      start_vt_getty(1);
   }
 
   /* Network, after X has been given its chance but regardless of whether it

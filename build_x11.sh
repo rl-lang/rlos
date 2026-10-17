@@ -617,10 +617,16 @@ fetch "$MLTERM_URL" "$X11_SRC/mlterm-${MLTERM_VER}.tar.gz" "mlterm"
 # rel-3_9_1 unpacks as mlterm-rel-3_9_1. Strip it into $MLTERM_SRC instead of
 # guessing, so the version can change without this silently unpacking a tree
 # the rest of the script does not look at.
-if [ ! -d "$MLTERM_SRC" ]; then
-  mkdir -p "$MLTERM_SRC"
-  tar -xf "$X11_SRC/mlterm-${MLTERM_VER}.tar.gz" -C "$MLTERM_SRC" --strip-components=1
-fi
+#
+# Re-extracted every run, like i3's build dir is removed every run: mlterm's
+# Makefiles inject -DSYSCONFDIR=$(sysconfdir) as a command-line define, which
+# make does not track as a dependency. An incremental tree therefore kept
+# serving objects compiled with the old sysconfdir after --sysconfdir=/etc
+# was added, and the staged binary went on looking in /usr/etc. The tarball
+# is cached, so this is one cheap extract.
+rm -rf "$MLTERM_SRC"
+mkdir -p "$MLTERM_SRC"
+tar -xf "$X11_SRC/mlterm-${MLTERM_VER}.tar.gz" -C "$MLTERM_SRC" --strip-components=1
 [ -f "$MLTERM_SRC/configure" ] || { fail "mlterm did not unpack"; exit 1; }
 
 # --disable-shared folds the type engines, ctl modules and scrollbar plugins
@@ -638,10 +644,15 @@ fi
 # The injected -I/-L are the same trick i3 needs just above: xft.pc was
 # installed into x11-prefix with DESTDIR but bakes prefix=/usr, so pkg-config
 # reports the host's include and lib dirs, where libXft does not exist.
+#
+# --sysconfdir=/etc: the autoconf default is ${prefix}/etc, which would bake
+# /usr/etc into the binary and put its config in /usr/etc/mlterm - a place
+# neither users nor the rest of this image expect. /etc/mlterm is the
+# conventional location and the one init.c documents.
 ( cd "$MLTERM_SRC" && \
   PKG_CONFIG_PATH="$X11_PREFIX/usr/lib64/pkgconfig" \
   run_quiet ./configure \
-    --prefix=/usr --libdir=/usr/lib64 \
+    --prefix=/usr --libdir=/usr/lib64 --sysconfdir=/etc \
     --disable-shared \
     --with-gui=xlib --with-type-engines=xcore,xft \
     --without-tools \
@@ -660,6 +671,19 @@ if readelf -d "$MLTERM_BIN" | grep NEEDED | grep -q "$SCRIPT_DIR"; then
   fail "without a SONAME"
   exit 1
 fi
+# The system config is read from SYSCONFDIR/mlterm/main (main/main.c hands
+# CONFIG_PATH to bl_set_sys_conf_dir), so the compiled-in value has to be the
+# /etc/mlterm/ this script stages. The clean unpack above is what makes that
+# true; this check makes a regression fail the build instead of shipping a
+# terminal that silently ignores its config.
+# grep without -q on purpose: -q makes grep exit at the first match, strings
+# takes SIGPIPE and the pipeline reports 141 under pipefail even when the
+# string is present. Reading to EOF costs nothing at this size.
+strings "$MLTERM_BIN" | grep -x '/usr/etc' > /dev/null \
+  && { fail "mlterm still embeds the old sysconfdir /usr/etc - stale build?"; exit 1; }
+strings "$MLTERM_BIN" | grep -x '/etc' > /dev/null \
+  || { fail "mlterm does not embed /etc as its sysconfdir - /etc/mlterm/main would not be read"; exit 1; }
+ok "mlterm embeds /etc as its sysconfdir (config at /etc/mlterm/)"
 # ~2MB, but this goes into a gzipped read-only initramfs where every MB costs
 # real boot time.
 run_quiet strip "$MLTERM_BIN"
@@ -835,9 +859,8 @@ done
 cp "$MLTERM_BIN" "$X11_DIST/bin/mlterm"
 strip "$X11_DIST"/bin/* 2>/dev/null || true
 
-# mlterm's system config. The binary's SYSCONFDIR is /usr/etc (the default
-# ${prefix}/etc, not /etc), so that is where it looks for mlterm/main and
-# mlterm/aafont. This is not optional cosmetic setup:
+# mlterm's system config. --sysconfdir=/etc above makes the binary look in
+# /etc/mlterm for main and aafont. This is not optional cosmetic setup:
 #
 #   - termtype upstream default is "xterm", which would overwrite the TERM
 #     init sets for its shell and drop the guest onto an entry that describes
@@ -848,8 +871,8 @@ strip "$X11_DIST"/bin/* 2>/dev/null || true
 #     can feed.
 #   - use_aafont selects the aafont (anti-aliased) font file; with it unset
 #     mlterm reads the xcore font file instead.
-mkdir -p "$X11_DIST/usr/etc/mlterm"
-cat > "$X11_DIST/usr/etc/mlterm/main" << 'MLTERMEOF'
+mkdir -p "$X11_DIST/etc/mlterm"
+cat > "$X11_DIST/etc/mlterm/main" << 'MLTERMEOF'
 # Staged by build_x11.sh - do not edit in place.
 #
 # Tokyo Night Moon. The desktop is deliberately DARKER than the terminal: see
@@ -893,7 +916,7 @@ scrollbar = false
 # and border_width (i3 sets border none on every window, so a 2px mlterm border
 # would make the terminal the only framed window in the session).
 MLTERMEOF
-cat > "$X11_DIST/usr/etc/mlterm/aafont" << 'MLTERMEOF'
+cat > "$X11_DIST/etc/mlterm/aafont" << 'MLTERMEOF'
 # Staged by build_x11.sh - the one family the guest ships. fontconfig's
 # monospace/sans-serif aliases in etc/fonts/fonts.conf point here too.
 #
@@ -1195,7 +1218,7 @@ for f in "${FONT_FILES[@]}"; do
 done
 # fontconfig maps monospace -> the shipped TTF, so i3bar (and any other client
 # that asks fontconfig for a default) picks it up without naming the family in
-# three places. mlterm's own font is named explicitly in usr/etc/mlterm/aafont.
+# three places. mlterm's own font is named explicitly in /etc/mlterm/aafont.
 # The fontconfig configuration is a shared asset, not an X11 one.
 #
 # It was generated inline here until the Wayland backend needed it too: foot
@@ -1207,7 +1230,7 @@ done
 mkdir -p "$X11_DIST/usr/share/rlos"
 cp -f "$SCRIPT_DIR/etc-rlos/fonts.conf" "$X11_DIST/usr/share/rlos/fonts.conf"
 # Terminfo. mlterm sets TERM in its child from its own termtype config, which
-# the staged usr/etc/mlterm/main pins to mlterm-256color. Unlike Alacritty,
+# the staged /etc/mlterm/main pins to mlterm-256color. Unlike Alacritty,
 # mlterm does not probe for an entry and fall back - it simply putenv()s the
 # configured string - so a missing entry would leave the shell with a TERM that
 # resolves to nothing and every curses app would misbehave. Compile the entry it

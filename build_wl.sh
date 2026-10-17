@@ -590,13 +590,22 @@ step "meson + ninja"
 #                           it is the only thing here that would want libX11,
 #                           and there is no X in this build.
 #   -Denable-xkbregistry=false  the registry daemon talks to an X server.
-#   -Denable-tools=false     xkbcli; nothing here calls it.
-( cd "$WL_SRC/libxkbcommon" && \
-  meson setup build --prefix="$WL_PREFIX" -Dbuildtype=release \
-      -Denable-wayland=true -Denable-x11=false \
-      -Denable-xkbregistry=false -Denable-tools=false -Denable-docs=false \
-      -Denable-bash-completion=false -Denable-zsh-completion=false \
-      > "$SCRIPT_DIR/.wl-xkbcommon.log" 2>&1 && \
+  #   -Denable-tools=false     xkbcli; nothing here calls it.
+  #   -Dx-locale-root=/usr/share/X11/locale
+  #                           the compose(5) lookup path. The default is
+  #                           prefix/datadir, i.e. wl-prefix/share/X11/locale -
+  #                           a build-host path with no fallback, unlike the
+  #                           xkb data below. With it set, every GUI process on
+  #                           hardware logged "[XKB-679] no compose file for
+  #                           locale C.UTF-8" and dead keys did nothing. The
+  #                           matching data is staged further down.
+  ( cd "$WL_SRC/libxkbcommon" && \
+    meson setup build --prefix="$WL_PREFIX" -Dbuildtype=release \
+        -Dx-locale-root=/usr/share/X11/locale \
+        -Denable-wayland=true -Denable-x11=false \
+        -Denable-xkbregistry=false -Denable-tools=false -Denable-docs=false \
+        -Denable-bash-completion=false -Denable-zsh-completion=false \
+        > "$SCRIPT_DIR/.wl-xkbcommon.log" 2>&1 && \
   ninja -C build >> "$SCRIPT_DIR/.wl-xkbcommon.log" 2>&1 && \
   ninja -C build install >> "$SCRIPT_DIR/.wl-xkbcommon.log" 2>&1 ) \
   || { fail "xkbcommon build failed"; tail -25 "$SCRIPT_DIR/.wl-xkbcommon.log" | sed 's/^/         /'; exit 1; }
@@ -1241,7 +1250,18 @@ step "meson + ninja"
 # a tray host to talk to) and the dialog tool, neither of which this image has a
 # use for. -Dsd-bus-provider=libelogind because every choice is systemd, and there
 # is no systemd here - init.c is PID 1.
-meson_build sway "$WL_SRC/sway" ".wl-sway.log" \
+#
+# Built through meson_build_guestpaths rather than meson_build so the compiled-in
+# sysconfdir is /etc. meson_build's --prefix=$WL_PREFIX would bake this machine's
+# wl-prefix/etc into the binary, which is the only reason init.c used to pass
+# -c /etc/sway/config. With sysconfdir=/etc, sway finds the staged config through
+# its own search (SYSCONFDIR/sway/config) and init passes no options at all.
+# sway's meson.build adds slashes around SYSCONFDIR itself, so the literal in
+# the binary reads "//etc" - the staging gate below accepts that spelling.
+# The helper's prefix=/usr + DESTDIR split also keeps meson from installing into
+# the build host's real /etc - the same reason libinput and kmod go through it.
+meson_build_guestpaths sway "$WL_SRC/sway" ".wl-sway.log" - /etc \
+    -Dsysconfdir=/etc \
     -Dswaybar=true -Dtray=disabled -Dswaynag=false -Dsd-bus-provider=libelogind \
     -Dman-pages=disabled -Ddefault-wallpaper=false \
     -Dzsh-completions=false -Dbash-completions=false -Dfish-completions=false
@@ -1493,13 +1513,36 @@ strings "$WL_DIST/bin/seatd-launch" | grep -q '^/bin/seatd$' \
     || { fail "seatd-launch still carries the build-host path"; exit 1; }
 ok "seatd-launch staged at bin/seatd-launch (execs /bin/seatd)"
 
+# sway must carry /etc as its compiled-in sysconfdir, or it will not find
+# /etc/sway/config now that init starts it with no -c. The old build embedded
+# this machine's wl-prefix path; these assertions turn that regression into a
+# build failure instead of a black screen at boot.
+[ -x "$WL_DIST/bin/sway" ] || fail "bin/sway has not been staged"
+# grep without -q on purpose: -q makes grep exit at the first match, strings
+# takes SIGPIPE and the pipeline reports 141 under pipefail even when the
+# string is present (and would have silently passed the negative check above).
+# Reading to EOF costs nothing at this size.
+strings "$WL_DIST/bin/sway" | grep "$WL_PREFIX" > /dev/null \
+    && { fail "sway embeds the build prefix $WL_PREFIX - was sysconfdir /etc?"; exit 1; }
+# sway's meson.build wraps SYSCONFDIR in its own pair of slashes
+# ('-DSYSCONFDIR="/@0@"'), so the absolute /etc it is given comes out as
+# "//etc" in the binary. Linux collapses leading slashes, so the runtime path
+# "//etc/sway/config" opens exactly what "/etc/sway/config" would - both
+# spellings pass here, anything else (a build prefix, a relative path) does
+# not.
+strings "$WL_DIST/bin/sway" | grep -xE '//?etc' > /dev/null \
+    || { fail "sway does not embed /etc (or //etc) as its config prefix - /etc/sway/config cannot be found"; exit 1; }
+ok "sway system config resolves to /etc/sway/config (no build prefix in binary)"
+
 # sway's config is WRITTEN, not copied.
 #
-# The upstream one that meson installed into wl-prefix/etc/sway/ cannot be used,
-# for three reasons, each of which fails quietly rather than loudly:
+# Upstream's copy now goes to the discarded build stage (sysconfdir=/etc under
+# DESTDIR, via meson_build_guestpaths) and never reaches wl-prefix. It could not
+# be used regardless, for three reasons, each of which fails quietly rather
+# than loudly:
 #
-#   1. It contains a build-host path. meson baked the configure prefix into the
-#      wallpaper line:
+#   1. It contained a build-host path. meson had baked the configure prefix
+#      into the wallpaper line:
 #        output * bg /home/.../wl-prefix/share/backgrounds/sway/Sway_Wallpaper...png
 #      In the guest that path does not exist, so the wallpaper silently does not
 #      appear - and the same prefix leak my staging gate looks for in binaries is
@@ -1585,6 +1628,29 @@ exec $term
     bindsym $mod+Shift+space floating toggle
     floating_modifier $mod normal
 
+    # Workspaces: digits switch, Mod4+Shift+digit moves the focused container.
+    bindsym $mod+1 workspace number 1
+    bindsym $mod+2 workspace number 2
+    bindsym $mod+3 workspace number 3
+    bindsym $mod+4 workspace number 4
+    bindsym $mod+5 workspace number 5
+    bindsym $mod+6 workspace number 6
+    bindsym $mod+7 workspace number 7
+    bindsym $mod+8 workspace number 8
+    bindsym $mod+9 workspace number 9
+    bindsym $mod+0 workspace number 10
+
+    bindsym $mod+Shift+1 move container to workspace number 1
+    bindsym $mod+Shift+2 move container to workspace number 2
+    bindsym $mod+Shift+3 move container to workspace number 3
+    bindsym $mod+Shift+4 move container to workspace number 4
+    bindsym $mod+Shift+5 move container to workspace number 5
+    bindsym $mod+Shift+6 move container to workspace number 6
+    bindsym $mod+Shift+7 move container to workspace number 7
+    bindsym $mod+Shift+8 move container to workspace number 8
+    bindsym $mod+Shift+9 move container to workspace number 9
+    bindsym $mod+Shift+0 move container to workspace number 10
+
 ### Input
 input * {
     repeat_delay 300
@@ -1595,10 +1661,30 @@ input * {
 # Single output, filling it. QEMU presents one connector; spelling it out means
 # sway does not have to guess when there is no EDID to read.
 output * bg #1c1c1c solid_color
+
+# Global font; the bar overrides the size (11) for its own text.
+font pango:JetBrainsMono Nerd Font Mono 12
+
+# The bar. The stock config ships none, and the date is the whole status line -
+# a one-line shell loop with nothing to supervise.
+bar {
+    position top
+    font pango:JetBrainsMono Nerd Font Mono 11
+    status_command while date +'%a %b %d %H:%M'; do sleep 1; done
+
+    colors {
+        background #1e1e2e
+        statusline #cdd646
+        focused_workspace #89b4fa #89b4fa #1e1e2e
+        inactive_workspace #313244 #313244 #cdd6f4
+        urgent_workspace #f38ba8 #f38ba8 #1e1e2e
+    }
+}
 SWAY_CONFIG
 
 # Assert it exists and is not the upstream one we rejected - if a future change
-# ever copies wl-prefix/etc/sway/ back over this, the assertion catches it.
+# ever copies upstream's copy from the build stage over this, the assertion
+# catches it.
 # udevd and its rules.
 #
 # eudev is built by this script for libinput's benefit - libinput links
@@ -1789,6 +1875,32 @@ for _datadir in "libinput:libinput" "xkeyboard-config-2:X11/xkb"; do
         warn "wl-prefix/share/$_d missing - nothing staged to /usr/share/$_p"
     fi
 done
+
+# The X11 locale tree - the compose(5) files - under XLOCALEDIR. Like the fonts,
+# this is libX11's nls data, which nothing in this script builds and which has no
+# pinned source; it comes from the build host. XLOCALEDIR is compiled to this
+# guest path (see -Dx-locale-root above), and compose.dir maps locale names onto
+# <locale>/Compose files - C.UTF-8 resolves through it to en_US.UTF-8/Compose.
+# Without the tree, xkbcommon-compose fails to instantiate and dead keys
+# silently do nothing, with an [XKB-679] line per terminal.
+#
+# Same tree, same assertion as build_x11.sh stages into the -x image; the two
+# scripts never import each other, so both need updating if this changes.
+WL_HOST_LOCALE_DIR="/usr/share/X11/locale"
+if [ -d "$WL_HOST_LOCALE_DIR" ]; then
+    mkdir -p "$WL_DIST/usr/share/X11/locale"
+    cp -a "$WL_HOST_LOCALE_DIR/." "$WL_DIST/usr/share/X11/locale/"
+    grep -Eq "^en_US.UTF-8/Compose[[:space:]]+C.UTF-8$" "$WL_DIST/usr/share/X11/locale/compose.dir" \
+        || { fail "compose.dir no longer maps C.UTF-8 to en_US.UTF-8/Compose - dead keys would break"; exit 1; }
+    [ -f "$WL_DIST/usr/share/X11/locale/en_US.UTF-8/Compose" ] \
+        || { fail "en_US.UTF-8/Compose missing - libxkbcommon-compose will fail"; exit 1; }
+    ok "compose data staged: /usr/share/X11/locale ($(du -sh "$WL_DIST/usr/share/X11/locale" | cut -f1), C.UTF-8 -> en_US.UTF-8/Compose)"
+else
+    fail "$WL_HOST_LOCALE_DIR missing on the build host"
+    echo "  libX11's nls data is not built here; install it or point" >&2
+    echo "  WL_HOST_LOCALE_DIR in build_wl.sh at wherever it lives." >&2
+    exit 1
+fi
 
 # Gate: the staged quirks must be byte-identical to the pinned libinput source's.
 #
