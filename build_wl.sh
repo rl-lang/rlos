@@ -1838,6 +1838,184 @@ done
 [ "$WL_FONTS_OK" -gt 0 ] || fail "no fonts staged"
 ok "fonts staged: $WL_FONTS_OK TTF(s) in usr/share/fonts"
 
+# Cursor theme: Bibata-Modern-Ice, the same theme and the same pruning as
+# build_x11.sh. Duplicated for the same reason the font list above is: the two
+# dists are built by scripts that never import each other, so a fix in one
+# belongs in both.
+#
+# wlroots loads the compositor's cursor from XCURSOR_THEME, which init.c puts
+# in sway's environment (XCURSOR_SIZE=24 alongside it); the name resolves
+# under /usr/share/icons, already covered by XDG_DATA_DIRS. Without a staged
+# theme sway falls back to wlroots' built-in cursor - functional, but not the
+# desktop's arrow.
+BIBATA_TAG="v2.0.7"
+BIBATA_THEME="Bibata-Modern-Ice"
+BIBATA_URL="https://github.com/ful1e5/Bibata_Cursor/releases/download/${BIBATA_TAG}/${BIBATA_THEME}.tar.xz"
+pins_fetch "$BIBATA_URL" "$WL_SRC/${BIBATA_THEME}.tar.xz" "Bibata-Modern-Ice"
+BIBATA_TMP="$WL_SRC/bibata-wl"
+rm -rf "$BIBATA_TMP" && mkdir -p "$BIBATA_TMP"
+tar -xf "$WL_SRC/${BIBATA_THEME}.tar.xz" -C "$BIBATA_TMP" --strip-components=1
+mkdir -p "$WL_DIST/usr/share/icons"
+# The release tarball is a flat <theme>/ tree; the theme wants it under
+# share/icons.
+if [ -d "$BIBATA_TMP/$BIBATA_THEME" ]; then
+  cp -a "$BIBATA_TMP/$BIBATA_THEME" "$WL_DIST/usr/share/icons/"
+elif [ -d "$BIBATA_TMP" ]; then
+  cp -a "$BIBATA_TMP" "$WL_DIST/usr/share/icons/$BIBATA_THEME"
+fi
+if [ -f "$WL_DIST/usr/share/icons/$BIBATA_THEME/cursor.theme" ]; then
+  RAW_SIZE="$(du -sh "$WL_DIST/usr/share/icons/$BIBATA_THEME" | cut -f1)"
+  # 28MB -> 1.5MB: each .xcursor container carries ~756 nominal sizes (one
+  # file is 9.4MB alone) and only 24/32 are ever asked for. Filenames are
+  # content hashes and cursor.theme refers to them by name, so the bytes
+  # inside can be rewritten. Full rationale beside the original in
+  # build_x11.sh.
+  info "pruning $BIBATA_THEME: $RAW_SIZE -> sizes 24 and 32 only"
+  python3 - "$WL_DIST/usr/share/icons/$BIBATA_THEME/cursors" << 'PRUNEEOF'
+import os, struct, sys
+
+IMAGE = 0xfffd0002
+KEEP = {24, 32}
+
+def prune(path):
+    with open(path, 'rb') as fh:
+        data = fh.read()
+    orig = len(data)
+    if len(data) < 16 or data[:4] != b'Xcur':
+        return orig, orig, False
+    hsz, ver, ntoc = struct.unpack_from('<III', data, 4)
+    if hsz + ntoc * 12 > orig:
+        return orig, orig, False
+    toc = [struct.unpack_from('<III', data, hsz + i * 12) for i in range(ntoc)]
+
+    chunks = []
+    for i, (ctype, csub, cpos) in enumerate(toc):
+        # Bound the chunk by the next TOC entry. TOC positions ascend, and
+        # slicing each chunk to EOF instead is quadratic - that is what OOM-killed
+        # the first attempt at this.
+        end = toc[i + 1][2] if i + 1 < ntoc else orig
+        if end < cpos:
+            end = orig
+        if ctype == IMAGE and csub not in KEEP:
+            continue
+        chunks.append((ctype, csub, data[cpos:end]))
+
+    if not any(c[0] == IMAGE for c in chunks):
+        return orig, 0, True
+
+    pos = hsz + len(chunks) * 12
+    new_toc, body = [], []
+    for ctype, csub, blob in chunks:
+        new_toc.append(struct.pack('<III', ctype, csub, pos))
+        body.append(blob)
+        pos += len(blob)
+    # The header carries ntoc, so it has to be rewritten to match the new TOC;
+    # leaving the old count makes X read past the end of the table.
+    hdr = data[:4] + struct.pack('<III', hsz, ver, len(new_toc)) + data[16:hsz]
+    out = hdr + b''.join(new_toc) + b''.join(body)
+    with open(path, 'wb') as fh:
+        fh.write(out)
+    return orig, len(out), True
+
+cursordir = sys.argv[1]
+before = after = 0
+kept = dropped = skipped = links = 0
+for name in sorted(os.listdir(cursordir)):
+    p = os.path.join(cursordir, name)
+    if os.path.islink(p):
+        # 89 of the 145 entries alias the same handful of real files; pruning
+        # each target once covers every alias.
+        links += 1
+        continue
+    if not os.path.isfile(p):
+        continue
+    b, a, is_xcur = prune(p)
+    if not is_xcur:
+        skipped += 1
+        continue
+    before += b
+    if a == 0:
+        os.remove(p)
+        dropped += 1
+    else:
+        after += a
+        kept += 1
+print(f"         {kept} rewritten, {dropped} dropped, {links} symlinks, {skipped} skipped")
+print(f"         {before/1048576:.1f} MB -> {after/1048576:.1f} MB")
+PRUNEEOF
+  # Structural check on every rewritten container, verbatim from
+  # build_x11.sh: a wrong rewrite (mixed byte order) once produced files
+  # nothing could parse and the only symptom was a black cursor on hardware.
+  # A bad container has to fail the build, not the boot.
+  python3 - "$WL_DIST/usr/share/icons/$BIBATA_THEME/cursors" << 'XCUREOF'
+import os, struct, sys
+d = sys.argv[1]
+IMAGE = 0xfffd0002
+bad, checked, sizes = [], 0, set()
+for name in sorted(os.listdir(d)):
+    p = os.path.join(d, name)
+    if os.path.islink(p) or not os.path.isfile(p):
+        continue
+    data = open(p, 'rb').read()
+    if data[:4] != b'Xcur' or len(data) < 16:
+        bad.append('%s: not an Xcursor container' % name)
+        continue
+    hsz, ver, ntoc = struct.unpack_from('<III', data, 4)
+    if hsz != 16:
+        bad.append('%s: header size %d, expected 16' % (name, hsz))
+        continue
+    if ver != 0x10000:
+        bad.append('%s: version 0x%x, expected 0x10000' % (name, ver))
+        continue
+    if ntoc == 0 or hsz + ntoc * 12 > len(data):
+        bad.append('%s: TOC of %d entries overruns the %d byte file' % (name, ntoc, len(data)))
+        continue
+    for i in range(ntoc):
+        ctype, csub, pos = struct.unpack_from('<III', data, hsz + i * 12)
+        if ctype != IMAGE:
+            continue
+        sizes.add(csub)
+        end = len(data)
+        for j in range(ntoc):
+            _, _, p2 = struct.unpack_from('<III', data, hsz + j * 12)
+            if p2 > pos:
+                end = min(end, p2)
+        # XcursorImageChunk header is 8 unsigned longs + 4 unsigned ints = 44B,
+        # then width*height pixels of ARGB. A chunk shorter than that is a
+        # truncated image, which renders as a solid block.
+        need = 44 + 4 * 64 * 64
+        if end - pos < 44:
+            bad.append('%s: size-%d image chunk is %d bytes, cannot hold a header'
+                       % (name, csub, end - pos))
+        elif end - pos > need:
+            bad.append('%s: size-%d image chunk is implausibly large (%d bytes)'
+                       % (name, csub, end - pos))
+    checked += 1
+
+if checked == 0:
+    sys.exit('no real cursor files found in %s' % d)
+if bad:
+    print('  these cursor files are structurally broken:')
+    for b in bad[:12]:
+        print('         - %s' % b)
+    sys.exit('%d of %d cursor files are broken' % (len(bad), checked))
+print('         %d cursor files structurally valid, sizes %s'
+      % (checked, sorted(sizes)))
+XCUREOF
+  ok "$BIBATA_THEME staged ($(du -sh "$WL_DIST/usr/share/icons/$BIBATA_THEME" | cut -f1))"
+else
+  warn "cursor.theme not found after extraction - inspect $BIBATA_TMP"
+  find "$BIBATA_TMP" -maxdepth 2 | head -10 | sed 's/^/         /'
+fi
+
+# The "default" name as well, one symlink, matching build_x11.sh: a class of
+# lookups ignores XCURSOR_THEME and asks for a theme literally named
+# "default" (i3's libxcb-cursor needed that on the X side). One set of pruned
+# cursors, two names.
+if [ -d "$WL_DIST/usr/share/icons/$BIBATA_THEME" ]; then
+  ln -sfn "$BIBATA_THEME" "$WL_DIST/usr/share/icons/default"
+fi
+
 # Runtime DATA, staged at the GUEST paths, not the prefix paths.
 #
 # Both libraries have the build prefix compiled in as a data search path:

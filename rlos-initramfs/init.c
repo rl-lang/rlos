@@ -1374,6 +1374,14 @@ static char *x_envp[] = {
     "XDG_DATA_DIRS=/usr/local/share:/usr/share",
     "XDG_CONFIG_DIRS=/etc/xdg",
     "XDG_SESSION_TYPE=tty",
+    /* The compositor cursor. wlroots loads it from XCURSOR_THEME at startup
+     * and sway reads XCURSOR_SIZE into its cursor manager; Xwayland, once it
+     * exists, inherits both from sway for X clients. The theme itself is
+     * staged by build_wl.sh under /usr/share/icons - already in
+     * XDG_DATA_DIRS - as Bibata-Modern-Ice, the same theme the X11 side
+     * uses. */
+    "XCURSOR_THEME=Bibata-Modern-Ice",
+    "XCURSOR_SIZE=24",
     "USER=user",
     "LOGNAME=user",
     "LANG=C.UTF-8",
