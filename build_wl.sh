@@ -1046,10 +1046,25 @@ step "meson + ninja"
 # jpeg because swaybg accepts any image. tiff, gif and the glycin sandbox are a
 # decoder each for formats this system has no use for - glycin needs its own
 # library and fails the build outright when it is merely enabled.
+#
+# -Dgio_sniffing=false is required, not cosmetic. Left at its default of true,
+# gdk-pixbuf identifies an image through GIO MIME sniffing, which at runtime
+# consults the shared-mime-info database at /usr/share/mime - and this image
+# ships no MIME database, so the sniff finds nothing and every load dies with
+# "Couldn't recognize the image file format" (swaybg's wallpaper, swaylock's -i
+# image). With it false, gdk-pixbuf falls back to the signature sniffing
+# compiled into the library itself, which needs no data files.
+#
+# build/ is removed first and that is not belt-and-braces: `meson setup` on an
+# already configured directory prints "Directory already configured", exits 0
+# and re-resolves nothing, so a build dir from before this option existed keeps
+# the old value silently. See the wf-recorder block for the same trap.
+rm -rf "$WL_SRC/gdk-pixbuf-${GDKPB_VER}/build"
 meson_build gdk-pixbuf "$WL_SRC/gdk-pixbuf-${GDKPB_VER}" ".wl-gdkpb.log" \
     -Dtests=false -Ddocumentation=false -Dintrospection=disabled \
     -Dman=false -Dinstalled_tests=false -Dthumbnailer=disabled -Dothers=disabled \
-    -Dpng=enabled -Djpeg=enabled -Dtiff=disabled -Dgif=disabled -Dglycin=disabled
+    -Dpng=enabled -Djpeg=enabled -Dtiff=disabled -Dgif=disabled -Dglycin=disabled \
+    -Dgio_sniffing=false
 need libgdk_pixbuf-2.0.so.0 "gdk-pixbuf"
 ok "gdk-pixbuf built"
 

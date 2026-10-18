@@ -2834,10 +2834,11 @@ static struct supervised procs[18];
    * only thing standing between a future nineteenth entry and a stack smash is
    * somebody counting correctly.
    *
-   * The X11 backend uses 11 of 18: klogd, Xorg, i3, mlterm, iwd, bluetoothd and
-   * the five getty prompts F2-F6. When X does not come up the i3+mlterm pair is
-   * replaced by the F1 getty, so the peak is unchanged. Wayland swaps
-   * Xorg/i3/mlterm for sway/swaybar and uses 10. The earlier comment claimed
+   * The X11 backend uses 12 of 18: klogd, Xorg, i3, mlterm, iwd, bluetoothd,
+   * acpid and the five getty prompts F2-F6. When X does not come up the
+   * i3+mlterm pair is replaced by the F1 getty, so the peak is unchanged.
+   * Wayland swaps
+   * Xorg/i3/mlterm for sway/swaybar and uses 11. The earlier comment claimed
    * "no plausible thirteenth child" while the real count was already 12, and
    * the Wayland branch made that false; 18 leaves real headroom, and the bound
    * is what actually protects the array: exceeding it drops a child loudly
@@ -2934,9 +2935,14 @@ static void start_vt_getty(int vt) {
  * checked on the next pass instead. Without SA_RESTART this does not work: the
  * syscall would be transparently restarted and the flag never noticed.
  *
- * SIGTERM and SIGINT power off, SIGQUIT reboots. That is the long-standing
- * convention, and it matches what "shutdown", "poweroff" and "reboot" from a shell
- * are expected to do.
+ * SIGTERM powers off; SIGINT and SIGQUIT reboot. SIGTERM is what the battery of
+ * "poweroff"-shaped entry points produce - busybox poweroff execs /sbin/telinit 0
+ * (TELINIT_PATH), the acpid power-button handler does the same, and `kill -TERM 1`
+ * from a shell lands here too. SIGQUIT is the other half of the telinit shim
+ * (`reboot` -> telinit 6 -> SIGQUIT) and SIGINT is what the kernel itself sends to
+ * PID 1 for Ctrl+Alt+Del, so the keyboard's reboot chord and the reboot command
+ * agree. That is the standard split: power button powers off, Ctrl+Alt+Del
+ * reboots.
  *
  * sig_atomic_t, not int: the compiler is entitled to assume a plain int accessed
  * from a handler is only touched in the handler, and the variable here is read by
@@ -2945,7 +2951,7 @@ static volatile sig_atomic_t shutdown_mode = 0;  /* 0 none, 1 poweroff, 2 reboot
 
 static void on_shutdown_signal(int sig) {
   /* The only assignment. No write(2), no malloc, no snprintf - see the note. */
-  shutdown_mode = (sig == SIGQUIT) ? 2 : 1;
+  shutdown_mode = (sig == SIGTERM) ? 1 : 2;
 }
 
 /* Install the handlers. Best effort: if sigaction fails the system still boots and
@@ -3160,7 +3166,7 @@ static void do_shutdown(int mode) {
    * group the foreground group of F7, and every child without its own ctty
    * (klogd, Xorg, sway, iwd, bluetoothd...) stays in init's group - so one
    * stray Ctrl-C typed on the log screen would signal the whole set of them,
-   * and init's own handler reads SIGINT as "poweroff" and SIGQUIT as "reboot"
+   * and init's own handler reads SIGINT and SIGQUIT as "reboot"
    * (see install_signal_handlers()). With no session owner the kernel drops
    * keyboard signals on that VT, which is exactly right for a screen that is
    * meant to be read, not typed into. */
@@ -3244,8 +3250,35 @@ static void do_shutdown(int mode) {
     }
   }
 
+  /* /run and /tmp are tmpfs, and on a USB stick that is what keeps every
+   * boot clean. On the initramfs images / is RAM, so these mounts only make
+   * the intent explicit; on a stick / is a persistent ext4 filesystem, and
+   * without them every socket, pid file and lock survives the reboot.
+   *
+   * The failure that motivated this: seatd is started with -z
+   * (unlink_existing_socket off), so on the second boot it finds
+   * /run/seatd.sock left by the first and refuses to start -
+   *
+   *   Socket file found at socket path /run/seatd.sock, refusing to start
+   *   seatd exited prematurely
+   *
+   * - after which sway never gets a seat and the boot falls back to the text
+   * console. A stale /run/udev is the quieter cousin: udevd's database makes
+   * devices look already tagged, they end up unclassified (the boot log shows
+   * "0 classified by udev"), and the cursor never moves. /tmp goes the same
+   * way: a stale .X0-lock and .X11-unix from the previous boot are the
+   * classic reasons the next X start fails.
+   *
+   * Sizes are caps, not reservations. /run holds sockets, pid files and the
+   * udev database - 64M is generous. /tmp is world-writable, and 512M bounds
+   * what a runaway process can pin in RAM on a stick; the alternative is a
+   * RAM disk sized at half of system RAM. */
   xmkdir("/run", 0755);
+  if (mount("run", "/run", "tmpfs", 0, "mode=0755,size=64m") != 0)
+    warnf("mount", "/run (tmpfs)");
   xmkdir("/tmp", 01777);
+  if (mount("tmp", "/tmp", "tmpfs", 0, "mode=1777,size=512m") != 0)
+    warnf("mount", "/tmp (tmpfs)");
   chmod("/tmp", 01777);
   /* /var/run -> /run.
    *
@@ -3398,6 +3431,7 @@ static void do_shutdown(int mode) {
   static char *iwd_argv[]         = { "/usr/libexec/iwd", NULL };
   static char *bluetoothd_argv[]  = { "/usr/libexec/bluetooth/bluetoothd",
                                       "--experimental", NULL };
+  static char *acpid_argv[]       = { "/bin/acpid", "-d", NULL };
   supervise(procs, &nprocs, { "klogd", "/sbin/klogd",
       klogd_argv, child_envp, 0, 0, -1, 0, 0, NULL });
 
@@ -4181,6 +4215,33 @@ supervise(procs, &nprocs, { "mlterm", "/bin/mlterm",
     warn("init: bluetooth: bluetoothd starting - scan with bluetoothctl\n");
   }
 
+  /* acpid. The power button (and, where present, the lid switch) reaches
+   * userspace as evdev events on a kernel-owned input device, and nothing else
+   * in this image listens for them - without this the button does nothing at
+   * all. busybox acpid reads /dev/input/event* directly (this kernel has no
+   * /proc/acpi/event) and runs the Debian-style handler /etc/acpi/PWRF/00000080
+   * or /etc/acpi/PWRB/00000080, whichever name the firmware reports, which
+   * assemble-rootfs.sh stages as `telinit 0` - the same poweroff path busybox's
+   * own poweroff uses. The lid handler is a deliberate no-op so that a lid
+   * event does not fail with a missing-handler error on every close (see
+   * assemble-rootfs.sh).
+   *
+   * Registered here, after settle_input_devices(), and that order is required:
+   * acpid opens /dev/input/event0.. at startup and dies on the spot with
+   * "No such file or directory" when none exist yet. The restart backoff would
+   * keep it down through the exact window where the first button press might
+   * arrive.
+   *
+   * -d implies -f: stays in the foreground and logs to stderr. The log-file and
+   * pid-file modes have nothing to offer a process PID 1 already supervises and
+   * reaps. as_user 0: the handler must be able to signal init. */
+  if (access("/bin/acpid", X_OK) != 0) {
+    warn("init: power: no acpid - the power button will do nothing\n");
+  } else {
+    supervise(procs, &nprocs, { "acpid", "/bin/acpid",
+        acpid_argv, child_envp, 0, 0, -1, 0, 0, NULL });
+  }
+
   /* sshd, started ONCE and NOT supervised. See start_sshd_once() for why it is
    * deliberately not in procs[]; the short version is that OpenSSH daemonises on
    * its own, so -D existed only to satisfy the supervisor, and paying for that
@@ -4357,7 +4418,7 @@ if (p == 0) {
            * can print - why it just exited - was being written to a screen nobody
            * was looking at, under a run of restart notices that pushed it off.
            *
-           * Only the two that log in prose need this; the rest keep stderr and
+           * Only the few that log in prose need this; the rest keep stderr and
            * stay no noisier than before. Not made a struct field on purpose: it
            * would mean editing every positional initialiser again, which is
            * exactly the class of change that caused the argv bug.
@@ -4368,6 +4429,15 @@ if (p == 0) {
               logpath = LOG_DIR "/iwd.log";
             else if (strcmp(procs[i].name, "bluetoothd") == 0)
               logpath = LOG_DIR "/bluetoothd.log";
+            /* acpid writes one line per event it dispatches (the -d debug
+             * output) and nothing else, ever. Without a file of its own the
+             * power button is the one feature that either works or leaves no
+             * trace anywhere: a press that never reaches acpid, a press it
+             * dispatches, and a handler that fails all look identical from
+             * outside. It is also the handler's stderr sink - the telinit shim's
+             * "Operation not permitted" would land here. */
+            else if (strcmp(procs[i].name, "acpid") == 0)
+              logpath = LOG_DIR "/acpid.log";
             if (logpath) {
               int lf = open(logpath, O_WRONLY | O_CREAT | O_TRUNC, 0644);
               if (lf >= 0) {

@@ -258,6 +258,12 @@ Defaults	env_reset
 Defaults	secure_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 root	ALL=(ALL:ALL) ALL
 user	ALL=(ALL:ALL) ALL
+# The desktop menu's Reboot and Power off entries run /sbin/telinit as the
+# session user, and there is no TTY there to answer a password prompt. The
+# line has to come after the general user rule: when several entries match,
+# sudoers uses the last one, so this makes exactly these two invocations
+# passwordless while everything else keeps asking.
+user	ALL=(root) NOPASSWD: /sbin/telinit 0, /sbin/telinit 6
 SUDOEOF
 chmod 440 "$TARGET/etc/sudoers"
 
@@ -741,6 +747,59 @@ if [[ ! -x "$TARGET/bin/rescue" ]]; then
     fail "$BB_DIST/bin/rescue missing or not executable"
 fi
 substep "busybox: rescue shell staged (busybox ash, rlsh remains the default)"
+
+# Shutdown plumbing. Three pieces that must agree about how "poweroff" works.
+#
+# /sbin/telinit - busybox is built with FEATURE_CALL_TELINIT=y and
+# TELINIT_PATH=/sbin/telinit, so `poweroff` and `reboot` exec this file with
+# runlevel "0" (halt/poweroff) or "6" (reboot). There is no telinit applet in
+# this busybox, and until this file existed those commands died with "can't
+# execute '/sbin/telinit'". It translates runlevels into the two signals
+# init.c's install_signal_handlers() maps to shutdown modes: SIGTERM powers
+# off, SIGQUIT reboots.
+#
+# /etc/acpi - busybox acpid chdir()s to this directory before its poll loop and
+# refuses to start without it. The PWRF/PWRB/LID subdirectories are the handler
+# paths busybox acpid derives from evdev KEY_POWER (PWRB is what LNXPWRBN-style
+# button devices report, PWRF the FADT fixed button - laptops ship either, so
+# both names are staged identically) and SW_LID. The lid handler is a
+# deliberate no-op: acpid logs and perrors every event whose handler is
+# missing, and a lid close should not print an error every time. Suspend is not
+# implemented, so doing nothing is the honest behaviour.
+#
+# /etc/acpid.conf - replaces acpid's built-in key table (PWRF/LID0 only, so a
+# PWRB machine would silently do nothing) and lists all three mappings. Format
+# is "key handler-path", whitespace-separated, relative to /etc/acpi.
+mkdir -p "$TARGET/sbin"
+cat > "$TARGET/sbin/telinit" << 'TELINITEOF'
+#!/bin/sh
+case "$1" in
+    6) exec /bin/kill -QUIT 1 ;;
+    *) exec /bin/kill -TERM 1 ;;
+esac
+TELINITEOF
+chmod 0755 "$TARGET/sbin/telinit"
+mkdir -p "$TARGET/etc/acpi/PWRF" "$TARGET/etc/acpi/PWRB" "$TARGET/etc/acpi/LID"
+cat > "$TARGET/etc/acpid.conf" << 'ACPIDEOF'
+PWRF	PWRF/00000080
+PWRB	PWRB/00000080
+LID0	LID/00000080
+ACPIDEOF
+cat > "$TARGET/etc/acpi/PWRF/00000080" << 'PWRFEOF'
+#!/bin/sh
+exec /sbin/telinit 0
+PWRFEOF
+cat > "$TARGET/etc/acpi/PWRB/00000080" << 'PWRBEOF'
+#!/bin/sh
+exec /sbin/telinit 0
+PWRBEOF
+cat > "$TARGET/etc/acpi/LID/00000080" << 'LIDEOF'
+#!/bin/sh
+exit 0
+LIDEOF
+chmod 0755 "$TARGET/etc/acpi/PWRF/00000080" "$TARGET/etc/acpi/PWRB/00000080" \
+           "$TARGET/etc/acpi/LID/00000080"
+substep "shutdown plumbing: /sbin/telinit + /etc/acpi handlers + /etc/acpid.conf"
 
 header "Runtime libraries"
 # Needed Libraries

@@ -411,7 +411,21 @@ install -m 0755 "$FEH_BIN" "$XAPPS_DIST/usr/bin/feh"
 if objdump -p "$XAPPS_DIST/usr/bin/feh" | grep -q "$XAPPS_PREFIX"; then
   fail "feh has a DT_NEEDED pointing into $XAPPS_PREFIX - host path leaked"
 fi
+# The right-click menu font file. feh's compiled-in default is
+# "NotoSans-Medium/10", and Imlib2 resolves a font name to a FILE - it appends
+# .ttf and searches $PWD and <prefix>/share/feh/fonts, not fontconfig
+# (imlib2 src/lib/font_load.c:96, feh src/imlib.c:137) - so with feh built
+# install_fonts=0 above, nothing ever lands in that directory: the menu failed
+# with "couldn't load menu font ... did you make install?" and feh exited on
+# right-click. The menu commands pass -M with this face explicitly (xmenu.sh,
+# xdg-open), so this file is what that name resolves to. It is read from the
+# same host directory build_x11.sh takes its TTFs from.
+HOST_FONT_DIR="/usr/share/fonts/nerdfonts"
+FEH_FONT="JetBrainsMonoNerdFontMono-Regular.ttf"
+[ -f "$HOST_FONT_DIR/$FEH_FONT" ] || { fail "host font missing: $HOST_FONT_DIR/$FEH_FONT"; exit 1; }
+install -D -m 0644 "$HOST_FONT_DIR/$FEH_FONT" "$XAPPS_DIST/usr/share/feh/fonts/$FEH_FONT"
 ok "feh staged ($(du -h "$XAPPS_DIST/usr/bin/feh" | cut -f1), $FEH_MAKE_FLAGS)"
+substep "feh menu font staged (share/feh/fonts/$FEH_FONT)"
 
 header "libXft ${LIBXFT_TAG} (xfiles links it; the host has none)"
 # Everything else libXft needs is already on the host: freetype2 and fontconfig

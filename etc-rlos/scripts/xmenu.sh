@@ -72,7 +72,10 @@ fi
 
 command -v xfiles   > /dev/null 2>&1 && sub "Files"         "xfiles $HOME"
 command -v w3m      > /dev/null 2>&1 && sub "Browser"       "w3m https://duckduckgo.com"
-command -v feh      > /dev/null 2>&1 && sub "Image viewer"  "feh"
+# -M is not optional: feh's compiled-in default font (NotoSans-Medium) is not
+# staged, and Imlib2 resolves font names as files - see build_xapps.sh. The face
+# named here is the one staged into /usr/share/feh/fonts.
+command -v feh      > /dev/null 2>&1 && sub "Image viewer"  "feh -M JetBrainsMonoNerdFontMono-Regular/10"
 command -v ttyrec   > /dev/null 2>&1 && sub "Record session" "ttyrec $HOME/session.log"
 sep
 
@@ -92,8 +95,13 @@ command -v fastfetch > /dev/null 2>&1 && sub "System info" "fastfetch"
       sub "Lock screen" "i3lock -i /usr/share/rlos/background.png"
   fi
   sep
-  sub "Reboot"    "reboot"
-  sub "Power off" "poweroff"
+  # sudo goes through the telinit shim (assemble-rootfs.sh stages /sbin/telinit
+  # as a shim that kills init with the right signal). sudoers grants NOPASSWD
+  # for exactly these two commands - the menu has no TTY for a password
+  # prompt, and plain busybox reboot/poweroff would exec /sbin/telinit as the
+  # session user, where the kill to init fails with EPERM.
+  sub "Reboot"    "sudo /sbin/telinit 6"
+  sub "Power off" "sudo /sbin/telinit 0"
 
 # -p takes a GEOMETRY, not a word: 50%+50% places the centre of the menu at the
 # centre of the screen (the % makes each offset relative to the screen rather

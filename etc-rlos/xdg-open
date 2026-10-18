@@ -60,7 +60,9 @@ name="${target##*/}"
 case "$name" in
     *.[Pp][Nn][Gg]|*.[Jj][Pp][Gg]|*.[Jj][Pp][Ee][Gg]|*.[Gg][Ii][Ff]|*.[Bb][Mm][Pp]|\
     *.[Xx][Pp][Mm]|*.[Tt][Ii][Ff]|*.[Tt][Ii][Ff][Ff]|*.[Ww][Ee][Bb][Pp]|*.[Pp][Nn][Mm]|*.[Tt][Gg][Aa])
-        exec feh "$target"
+        # -M: feh's default menu font is not staged; this is the face
+        # build_xapps.sh puts in /usr/share/feh/fonts (see xmenu.sh).
+        exec feh -M JetBrainsMonoNerdFontMono-Regular/10 "$target"
         ;;
     *.[Mm][Pp]4|*.[Mm][Kk][Vv]|*.[Ww][Ee][Bb][Mm]|*.[Mm][Oo][Vv]|*.[Aa][Vv][Ii]|*.[Mm][Pp]3|*.[Oo][Gg][Gg]|*.[Ww][Aa][Vv]|*.[Ff][Ll][Aa][Cc]|*.[Oo][Pp][Uu][Ss])
         if command -v ffplay >/dev/null 2>&1; then
