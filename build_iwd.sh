@@ -264,27 +264,8 @@ header "iwd configuration"
 # backend=internal is the important line. iwd's alternative is to shell out to
 # wpa_supplicant for the handshake; there is no wpa_supplicant in this image and
 # adding one would double the wireless stack. internal does it in-process.
-cat > "$DIST/etc/iwd/main.conf" << 'CONF'
-# iwd main configuration.
-#
-# No [Settings] StoreCredentials=true here, and no network blocks: Wi-Fi is
-# connected on demand from iwctl, which writes profiles to /var/lib/iwd. /etc is
-# shipped read-only in the image and /var is a tmpfs, so a PSK typed at connect
-# time never touches anything persistent - and nothing here is a credential.
-
-[Device]
-# Some adapters need this off to scan while connected; harmless for those that do
-# not, and it is the only setting that changes scanning behaviour at all.
-# AllowRoam=true
-
-[Settings]
-# Trust every network that presents itself. There is no CA store to validate an
-# enterprise network against in this image, and refusing every network would make
-# Wi-Fi unusable rather than safer. Documented here as a deliberate choice rather
-# than left implicit.
-# Default is true; stated so it is not mistaken for an oversight.
-TrustBuiltinIPs=false
-CONF
+[ -f "$ROOT/etc-rlos/iwd-main.conf" ] || die "etc-rlos/iwd-main.conf missing"
+install -m 0644 "$ROOT/etc-rlos/iwd-main.conf" "$DIST/etc/iwd/main.conf"
 info "main.conf written (no credentials, on-demand connect)"
 
 # iwd also reads iwd.conf in the same directory as the daemon's systemd unit

@@ -1,0 +1,10 @@
+Defaults	env_reset
+Defaults	secure_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+root	ALL=(ALL:ALL) ALL
+user	ALL=(ALL:ALL) ALL
+# The desktop menu's Reboot and Power off entries run /sbin/telinit as the
+# session user, and there is no TTY there to answer a password prompt. The
+# line has to come after the general user rule: when several entries match,
+# sudoers uses the last one, so this makes exactly these two invocations
+# passwordless while everything else keeps asking.
+user	ALL=(root) NOPASSWD: /sbin/telinit 0, /sbin/telinit 6

@@ -253,19 +253,8 @@ chmod 600 "$TARGET/etc/shadow"
 
 # sudo
 mkdir -p "$TARGET/etc/sudoers.d"
-cat > "$TARGET/etc/sudoers" << 'SUDOEOF'
-Defaults	env_reset
-Defaults	secure_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-root	ALL=(ALL:ALL) ALL
-user	ALL=(ALL:ALL) ALL
-# The desktop menu's Reboot and Power off entries run /sbin/telinit as the
-# session user, and there is no TTY there to answer a password prompt. The
-# line has to come after the general user rule: when several entries match,
-# sudoers uses the last one, so this makes exactly these two invocations
-# passwordless while everything else keeps asking.
-user	ALL=(root) NOPASSWD: /sbin/telinit 0, /sbin/telinit 6
-SUDOEOF
-chmod 440 "$TARGET/etc/sudoers"
+[[ -f "$SCRIPT_DIR/etc-rlos/sudoers" ]] || fail "etc-rlos/sudoers missing"
+install -m 0440 "$SCRIPT_DIR/etc-rlos/sudoers" "$TARGET/etc/sudoers"
 
 # /etc/profile - the environment every login shell starts with.
 #
@@ -280,13 +269,8 @@ chmod 440 "$TARGET/etc/sudoers"
 # console shell reach a running -w desktop instead of failing to connect - the
 # same values the old direct ash prompts carried, which login would otherwise
 # take away. Harmless in text and X11 images: nothing is listening.
-cat > "$TARGET/etc/profile" << 'PROFILEEOF'
-export TERM=linux
-export LANG=C.UTF-8
-export LC_ALL=C.UTF-8
-export XDG_RUNTIME_DIR=/run/user/1000
-export WAYLAND_DISPLAY=wayland-0
-PROFILEEOF
+[[ -f "$SCRIPT_DIR/etc-rlos/profile" ]] || fail "etc-rlos/profile missing"
+install -m 0644 "$SCRIPT_DIR/etc-rlos/profile" "$TARGET/etc/profile"
 
 # hostname
 echo "system" > "$TARGET/etc/hostname"
@@ -587,46 +571,8 @@ fi
         LOGO_LINES="$(wc -l < "$SCRIPT_DIR/ff_logo.txt")"
         mkdir -p "$TARGET/usr/share/rlos" "$TARGET/etc/xdg/fastfetch"
         cp "$SCRIPT_DIR/ff_logo.txt" "$TARGET/usr/share/rlos/ff_logo.txt"
-        cat > "$TARGET/etc/xdg/fastfetch/config.jsonc" << 'FFCFG'
-{
-  "logo": {
-    "source": "/usr/share/rlos/ff_logo.txt",
-    "color": {
-      "1": "#DC143C",
-      "2": "#7A0C22",
-      "3": "#E34234",
-      "4": "#7A241D",
-      "5": "#82AAFF",
-      "6": "#44557A",
-      "7": "#C099FF",
-      "8": "#5C4A80"
-    }
-  },
-  "modules": [
-    "title",
-    "separator",
-    "os",
-    "host",
-    "kernel",
-    "initsystem",
-    "uptime",
-    "break",
-    "shell",
-    "wm",
-    "font",
-    "editor",
-    "terminal",
-    "break",
-    "cpu",
-    "gpu",
-    "memory",
-    "disk",
-    "battery",
-    "break",
-    "colors"
-  ]
-}
-FFCFG
+        [[ -f "$SCRIPT_DIR/etc-rlos/fastfetch.jsonc" ]] || fail "etc-rlos/fastfetch.jsonc missing"
+        install -m 0644 "$SCRIPT_DIR/etc-rlos/fastfetch.jsonc" "$TARGET/etc/xdg/fastfetch/config.jsonc"
         substep "logo: etc/xdg/fastfetch/fastfetch.jsonc -> usr/share/rlos/ff_logo.txt ($LOGO_LINES lines)"
     else
         substep "no ff_logo.txt in the repo - fastfetch will use its built-in logo"
@@ -898,39 +844,8 @@ substep "rl sources in /home/user/programs/rl"
 # Scripts
 step "staging udhcpc lease script..."
 mkdir -p "$TARGET/usr/share/udhcpc"
-cat > "$TARGET/usr/share/udhcpc/default.script" << 'UDSCRIPT'
-#!/bin/sh
-# Applied by busybox udhcpc. Called with the environment busybox sets:
-#   $1 = "bound" | "renew" | "deconfig" | "leasefail" | "timeout"
-#   $ip, $subnet, $router, $dns are the lease terms.
-[ -n "$1" ] || exit 1
-
-if [ "$1" = "deconfig" ]; then
-    # Lease gone or lost: drop what we had, or a stale address outlives the DHCP
-    # server and traffic goes nowhere.
-    ip addr flush dev "$interface" 2>/dev/null
-    : > /etc/resolv.conf
-    exit 0
-fi
-
-case "$1" in
-    bound|renew)
-        ip addr flush dev "$interface" 2>/dev/null
-        ip addr add "$ip/${subnet:-24}" dev "$interface" 2>/dev/null
-        # Default route. "$router" can be several space-separated; the first is
-        # the one busybox considers primary.
-        for r in $router; do
-            ip route add default via "$r" dev "$interface" 2>/dev/null && break
-        done
-        : > /etc/resolv.conf
-        for d in $dns; do
-            echo "nameserver $d" >> /etc/resolv.conf
-        done
-        ;;
-esac
-exit 0
-UDSCRIPT
-chmod 755 "$TARGET/usr/share/udhcpc/default.script"
+[[ -f "$SCRIPT_DIR/etc-rlos/udhcpc-default.script" ]] || fail "etc-rlos/udhcpc-default.script missing"
+install -m 0755 "$SCRIPT_DIR/etc-rlos/udhcpc-default.script" "$TARGET/usr/share/udhcpc/default.script"
 substep "udhcpc lease script: usr/share/udhcpc/default.script"
 
 if [[ -d "$SCRIPTS" ]]; then
@@ -1003,10 +918,8 @@ if [[ -d "$NETTOOLS_DIST" ]]; then
 
       if [[ -f "$TARGET/usr/share/btop/themes/tokyo-night.theme" ]]; then
           mkdir -p "$TARGET/home/user/.config/btop"
-          cat > "$TARGET/home/user/.config/btop/btop.conf" << 'BTOPCONF'
-color_theme = "tokyo-night"
-theme_background = false
-BTOPCONF
+          [[ -f "$SCRIPT_DIR/etc-rlos/btop.conf" ]] || fail "etc-rlos/btop.conf missing"
+          install -m 0644 "$SCRIPT_DIR/etc-rlos/btop.conf" "$TARGET/home/user/.config/btop/btop.conf"
           substep "btop: tokyo-night theme selected"
       else
           substep "btop: no tokyo-night.theme staged - btop keeps its built-in theme"

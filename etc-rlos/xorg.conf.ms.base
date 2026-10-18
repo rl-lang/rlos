@@ -1,0 +1,16 @@
+Section "ServerFlags"
+  # No VT switching: init owns the console, and the text console stays
+  # reachable on Ctrl-Alt-F2.
+  Option "AutoAddGPU" "off"
+  Option "DontZap" "off"
+EndSection
+
+Section "Device"
+  Identifier  "modeset0"
+  Driver      "modesetting"
+EndSection
+
+Section "Screen"
+  Identifier  "screen0"
+  Device      "modeset0"
+EndSection

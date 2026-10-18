@@ -1,0 +1,6 @@
+# Staged by build_x11.sh and build_wl.sh - byte-identical in both images.
+#
+# busybox login does not read this file; i3lock's service file includes it, so
+# every credential check the locker makes lands in the two lines below.
+auth     required pam_unix.so
+account  required pam_unix.so

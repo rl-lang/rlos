@@ -1008,61 +1008,10 @@ cp "$SCRIPT_DIR/background.png" "$X11_DIST/usr/share/rlos/background.png"
 #   - use_aafont selects the aafont (anti-aliased) font file; with it unset
 #     mlterm reads the xcore font file instead.
 mkdir -p "$X11_DIST/etc/mlterm"
-cat > "$X11_DIST/etc/mlterm/main" << 'MLTERMEOF'
-# Staged by build_x11.sh - do not edit in place.
-#
-# Tokyo Night Moon. The desktop is deliberately DARKER than the terminal: see
-# etc/i3.config for the layering (bar #16161e, desktop #1a1b26, window #24273b).
-# The window being the lightest surface is what makes a borderless terminal read
-# as a window instead of a hole in the desktop.
-termtype = mlterm-256color
-type_engine = xft
-use_aafont = true
-# Force the fontconfig engine even if aafont were somehow not used, so a
-# bitmap-font fallback can never happen in a guest that ships no bitmap fonts.
-use_anti_alias = true
-# 16 is mlterm's own default; the earlier 12 was a mistake and looked tiny.
-fontsize = 16
-# 10000 lines is plenty for a debugging session and costs nothing until used -
-# mlterm allocates the scrollback as it is filled, not up front.
-scrollback_lines = 10000
-# Colours. mlterm resolves these through XParseColor (uitoolkit/xlib/ui_color.c),
-# which is why "#rrggbb" works here and not just a colour name.
-#
-#   bg #24273b is Moon's background, and is deliberately LIGHTER than the #1a1b26
-#      desktop behind it, so the window has a visible edge with borders off.
-#   fg #cad3f5 is Moon's foreground.
-#   cursor #7dcfff is the same accent the i3 bar uses for the focused workspace,
-#      so the caret and the bar highlight are the one colour.
-bg_color = #24273b
-fg_color = #cad3f5
-cursor_fg_color = #24273b
-cursor_bg_color = #7dcfff
-# Bold and italic are real font faces here, not synthetic: build_x11.sh stages
-# JetBrainsMonoNerdFontMono-{Italic,BoldItalic}.ttf alongside Regular and Bold.
-# Without those two files these keys would still work, but Xft would draw a
-# slanted synthetic oblique instead of the typeface's own italic.
-use_bold_font = true
-use_italic_font = true
-# No `scrollbar`: the bar is already the tallest thing on screen and a second
-# always-visible scrollbar competes with the text for the right edge.
-scrollbar = false
-# Deliberately NOT set: alpha (needs a 32-bit ARGB visual AND a compositor -
-# this image has neither, so it would be an inert line that looks like it works)
-# and border_width (i3 sets border none on every window, so a 2px mlterm border
-# would make the terminal the only framed window in the session).
-MLTERMEOF
-cat > "$X11_DIST/etc/mlterm/aafont" << 'MLTERMEOF'
-# Staged by build_x11.sh - the one family the guest ships. fontconfig's
-# monospace/sans-serif aliases in etc/fonts/fonts.conf point here too.
-#
-# Both keys are given. ui_font_config.c stores a DEFAULT entry separately and
-# falls back to it for any charset without its own line, but naming the Unicode
-# charset explicitly as well removes any doubt about which line an ASCII cell
-# in a UTF-8 session actually resolves through.
-DEFAULT = JetBrainsMono Nerd Font Mono
-ISO10646_UCS4_1 = JetBrainsMono Nerd Font Mono
-MLTERMEOF
+[ -f "$SCRIPT_DIR/etc-rlos/mlterm-main" ] || { fail "etc-rlos/mlterm-main missing"; exit 1; }
+install -m 0644 "$SCRIPT_DIR/etc-rlos/mlterm-main" "$X11_DIST/etc/mlterm/main"
+[ -f "$SCRIPT_DIR/etc-rlos/mlterm-aafont" ] || { fail "etc-rlos/mlterm-aafont missing"; exit 1; }
+install -m 0644 "$SCRIPT_DIR/etc-rlos/mlterm-aafont" "$X11_DIST/etc/mlterm/aafont"
 
 # --- PAM, the half of the locker that is not the binary -------------------------
 # i3lock runs pam_start("i3lock", username, ...) and reads whatever the module
@@ -1088,21 +1037,15 @@ MLTERMEOF
 #     tree; it says `auth include login`, and /etc/pam.d/login needs a pam_unix
 #     stack to include. The guest's busybox login never reads this file - it
 #     checks /etc/shadow itself - so this login is written minimally and exists
-#     for the include. The -w image stages a byte-identical one; if this ever
-#     drifts, that is the place to notice.
+#     for the include. It comes from etc-rlos/login.pam, the same single source
+#     the -w image stages, so the two cannot drift.
 for mod in "$PAM_MODDIR"/*.so; do
   [ -e "$mod" ] || { fail "no PAM modules under $PAM_MODDIR"; exit 1; }
   cp "$mod" "$X11_DIST/usr/lib64/security/"
 done
 install -m 4755 "$X11_PREFIX/usr/sbin/unix_chkpwd" "$X11_DIST/usr/sbin/unix_chkpwd"
-cat > "$X11_DIST/etc/pam.d/login" << 'PAMEOF'
-# Staged by build_x11.sh and build_wl.sh - byte-identical in both images.
-#
-# busybox login does not read this file; i3lock's service file includes it, so
-# every credential check the locker makes lands in the two lines below.
-auth     required pam_unix.so
-account  required pam_unix.so
-PAMEOF
+[ -f "$SCRIPT_DIR/etc-rlos/login.pam" ] || { fail "etc-rlos/login.pam missing"; exit 1; }
+install -m 0644 "$SCRIPT_DIR/etc-rlos/login.pam" "$X11_DIST/etc/pam.d/login"
 [ -f "$I3LOCK_PKG/etc/pam.d/i3lock" ] \
   || { fail "i3lock's pam.d service file was not installed"; exit 1; }
 cp "$I3LOCK_PKG/etc/pam.d/i3lock" "$X11_DIST/etc/pam.d/i3lock"
@@ -1675,68 +1618,12 @@ fi
 # set of event nodes is only knowable on the machine at boot. Both templates
 # therefore carry the Device/Screen pair and nothing else - no InputDevice, no
 # ServerLayout - so appending cannot create a duplicate section.
-cat > "$X11_DIST/usr/share/rlos/xorg.conf.ms.base" << 'XORGEOF'
-Section "ServerFlags"
-  # No VT switching: init owns the console, and the text console stays
-  # reachable on Ctrl-Alt-F2.
-  Option "AutoAddGPU" "off"
-  Option "DontZap" "off"
-EndSection
+[ -f "$SCRIPT_DIR/etc-rlos/xorg.conf.ms.base" ] || { fail "etc-rlos/xorg.conf.ms.base missing"; exit 1; }
+install -m 0644 "$SCRIPT_DIR/etc-rlos/xorg.conf.ms.base" "$X11_DIST/usr/share/rlos/xorg.conf.ms.base"
 
-Section "Device"
-  Identifier  "modeset0"
-  Driver      "modesetting"
-EndSection
-
-Section "Screen"
-  Identifier  "screen0"
-  Device      "modeset0"
-EndSection
-XORGEOF
-
-cat > "$X11_DIST/usr/share/rlos/xorg.conf.fbdev.base" << 'XORGEOF'
-Section "ServerFlags"
-  # No VT switching: init owns the console, and the text console stays
-  # reachable on Ctrl-Alt-F2.
-  Option "AutoAddGPU" "off"
-  Option "DontZap" "off"
-EndSection
-
-Section "Device"
-  Identifier  "fbdev0"
-  Driver      "fbdev"
-  Option      "fbdev" "/dev/fb0"
-EndSection
-
-Section "Screen"
-  Identifier  "screen0"
-  Device      "fbdev0"
-  # Depth 24 on a 32bpp framebuffer, and that is not a typo.
-  #
-  # /dev/fb0 is 32bpp XRGB8888, but DRM_FBDEV_EMULATION does not report
-  # FB_VISUAL_TRUECOLOR, so fbdevHWGetDepth() in fbdevhw.c falls through to
-  # bits_per_pixel and hands the server depth 32. xf86SetWeight() in
-  # xf86Helper.c has no `case 32:` and so leaves the weight at 000, and its
-  # consistency check (depth must equal r+g+b) aborts startup with
-  #   (EE) FBDEV(0): Weight given (000) is inconsistent with the depth (32)
-  #   (EE) Screen(s) found, but none have a usable configuration.
-  #   (EE) Fatal server error: no screens found
-  # Asking for depth 24 makes the 8/8/8 default apply and the check pass. The
-  # 32nd bit per pixel is just the unused X byte, so a depth 24 TrueColor
-  # visual maps straight onto the framebuffer with no conversion.
-  #
-  # The modesetting template deliberately has NO DefaultDepth: it takes its
-  # depth from the real DRM mode, and xf86SetDepthBpp skips the config's
-  # DefaultDepth entirely when -depth or -fbbpp is present, so a hardcoded
-  # value here would override the mode the hardware actually reported.
-  DefaultDepth 24
-  SubSection "Display"
-    Depth 24
-    Visual "TrueColor"
-  EndSubSection
-EndSection
-XORGEOF
-ok "xorg.conf.base + fonts.conf written"
+[ -f "$SCRIPT_DIR/etc-rlos/xorg.conf.fbdev.base" ] || { fail "etc-rlos/xorg.conf.fbdev.base missing"; exit 1; }
+install -m 0644 "$SCRIPT_DIR/etc-rlos/xorg.conf.fbdev.base" "$X11_DIST/usr/share/rlos/xorg.conf.fbdev.base"
+ok "xorg.conf.base + fonts.conf staged"
 
 # Verify the config that was just generated, not a hand-edited copy. This file
 # is regenerated on every build, so a fix applied directly to x11-dist/ is

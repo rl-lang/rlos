@@ -1,0 +1,30 @@
+#!/bin/sh
+# Applied by busybox udhcpc. Called with the environment busybox sets:
+#   $1 = "bound" | "renew" | "deconfig" | "leasefail" | "timeout"
+#   $ip, $subnet, $router, $dns are the lease terms.
+[ -n "$1" ] || exit 1
+
+if [ "$1" = "deconfig" ]; then
+    # Lease gone or lost: drop what we had, or a stale address outlives the DHCP
+    # server and traffic goes nowhere.
+    ip addr flush dev "$interface" 2>/dev/null
+    : > /etc/resolv.conf
+    exit 0
+fi
+
+case "$1" in
+    bound|renew)
+        ip addr flush dev "$interface" 2>/dev/null
+        ip addr add "$ip/${subnet:-24}" dev "$interface" 2>/dev/null
+        # Default route. "$router" can be several space-separated; the first is
+        # the one busybox considers primary.
+        for r in $router; do
+            ip route add default via "$r" dev "$interface" 2>/dev/null && break
+        done
+        : > /etc/resolv.conf
+        for d in $dns; do
+            echo "nameserver $d" >> /etc/resolv.conf
+        done
+        ;;
+esac
+exit 0

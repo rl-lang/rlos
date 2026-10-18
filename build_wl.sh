@@ -1923,147 +1923,9 @@ ok "Xwayland staged at usr/bin/Xwayland ($(du -h "$WL_DIST/usr/bin/Xwayland" | c
 # starts its session. Putting the terminal in init as well would mean two
 # owners for one process.
 mkdir -p "$WL_DIST/etc/sway"
-cat > "$WL_DIST/etc/sway/config" <<'SWAY_CONFIG'
-# /etc/sway/config - rlOS Wayland session
-#
-# Written by build_wl.sh, not shipped by sway. See the comment above about the
-# build-host path in upstream's copy and the two keybindings that call binaries
-# this image does not contain.
-
-### Variables
-set $mod Mod4
-set $left h
-set $down j
-set $up k
-set $right l
-set $term foot
-# The screen locker, used by both the boot-to-lock autostart and the lock key
-# so the two cannot drift apart. -f forks into the background once it owns the
-# session, -i paints the same background.png as the output line further down,
-# and the colours are the shared palette (#1a1b26 desktop, #7dcfff accent,
-# #f38ba8 urgent, #a6adc8 text) so both backends read as one system.
-# --indicator-idle-visible keeps the ring on screen before the first keypress
-# (swaylock hides it by default) and --show-failed-attempts counts bad tries.
-set $lock swaylock -f -i /usr/share/rlos/background.png --indicator-idle-visible --show-failed-attempts --font monospace --inside-color 1a1b26e6 --ring-color 7dcfff --key-hl-color 7dcfff --bs-hl-color f38ba8 --text-color a6adc8 --inside-ver-color 1a1b26e6 --ring-ver-color 7dcfff --inside-wrong-color 1a1b26e6 --ring-wrong-color f38ba8
-
-### Output
-# The image wallpaper lives further down, at the "Output layout" heading. This
-# block exists to say why it is spelled the way it is.
-#
-# NOTE the command is `output ... bg`, NOT a bare `background`. There is no
-# `background` command in sway 1.12 - commands.c lists only `output` - so
-# `background /usr/share/rlos/background.png fill` fails to parse as an unknown
-# command and sway aborts the whole config.
-
-### Autostart
-# Boot-to-lock: start the session locked, with the same command the lock key
-# uses ($lock). The desktop comes up behind the prompt; the password is what
-# the user meets first.
-exec $lock
-# The session's terminal. sway execs this and keeps it as a child, so it dies
-# with the compositor and restarts with it - which is why it is here and not
-# registered in init.c's supervised table.
-exec $term
-
-### Keys
-    bindsym $mod+Return exec $term
-    bindsym $mod+Shift+q kill
-    bindsym $mod+Shift+c reload
-
-    # Screen lock. The command is the $lock variable at the top of this file,
-    # shared with the boot-to-lock autostart above; the comment there explains
-    # the flags.
-    bindsym $mod+Escape exec $lock
-
-    # Focus and move. Vim keys under Mod4, arrows under Mod1.
-    bindsym $mod+$left  focus left
-    bindsym $mod+$down   focus down
-    bindsym $mod+$up     focus up
-    bindsym $mod+$right  focus right
-    bindsym $mod+Left    focus left
-    bindsym $mod+Down    focus down
-    bindsym $mod+Up      focus up
-    bindsym $mod+Right   focus right
-    bindsym $mod+Shift+$left focus move left
-    bindsym $mod+Shift+$down  focus move down
-    bindsym $mod+Shift+$up    focus move up
-    bindsym $mod+Shift+$right focus move right
-    bindsym $mod+Shift+Left   move left
-    bindsym $mod+Shift+Down   move down
-    bindsym $mod+Shift+Up     move up
-    bindsym $mod+Shift+Right  move right
-
-    # Split containers, then the orientation to apply to new ones.
-    bindsym $mod+b splith
-    bindsym $mod+v splitv
-    bindsym $mod+s layout stacking
-    bindsym $mod+w layout tabbed
-    bindsym $mod+e layout toggle split
-
-    # Fullscreen and floating.
-    bindsym $mod+f fullscreen
-    bindsym $mod+Shift+space floating toggle
-    floating_modifier $mod normal
-
-    # Workspaces: digits switch, Mod4+Shift+digit moves the focused container.
-    bindsym $mod+1 workspace number 1
-    bindsym $mod+2 workspace number 2
-    bindsym $mod+3 workspace number 3
-    bindsym $mod+4 workspace number 4
-    bindsym $mod+5 workspace number 5
-    bindsym $mod+6 workspace number 6
-    bindsym $mod+7 workspace number 7
-    bindsym $mod+8 workspace number 8
-    bindsym $mod+9 workspace number 9
-    bindsym $mod+0 workspace number 10
-
-    bindsym $mod+Shift+1 move container to workspace number 1
-    bindsym $mod+Shift+2 move container to workspace number 2
-    bindsym $mod+Shift+3 move container to workspace number 3
-    bindsym $mod+Shift+4 move container to workspace number 4
-    bindsym $mod+Shift+5 move container to workspace number 5
-    bindsym $mod+Shift+6 move container to workspace number 6
-    bindsym $mod+Shift+7 move container to workspace number 7
-    bindsym $mod+Shift+8 move container to workspace number 8
-    bindsym $mod+Shift+9 move container to workspace number 9
-    bindsym $mod+Shift+0 move container to workspace number 10
-
-### Input
-input * {
-    repeat_delay 300
-    repeat_rate 50
-}
-
-### Output layout
-# Single output, filling it. QEMU presents one connector; spelling it out means
-# sway does not have to guess when there is no EDID to read.
-#
-# Image first, with a colour fallback as the trailing argument: sway's
-# background parser (sway/commands/output/background.c) takes a trailing
-# #rrggbb as background_fallback and passes it to swaybg as -c, behind -i.
-# So a missing or unreadable file degrades to the old solid #1c1c1c instead of
-# black. swaybg itself is spawned by sway; see the comment above this config.
-output * bg /usr/share/rlos/background.png fill #1c1c1c
-
-# Global font; the bar overrides the size (11) for its own text.
-font pango:JetBrainsMono Nerd Font Mono 12
-
-# The bar. The stock config ships none, and the date is the whole status line -
-# a one-line shell loop with nothing to supervise.
-bar {
-    position top
-    font pango:JetBrainsMono Nerd Font Mono 11
-    status_command while date +'%a %b %d %H:%M'; do sleep 1; done
-
-    colors {
-        background #1e1e2e
-        statusline #cdd646
-        focused_workspace #89b4fa #89b4fa #1e1e2e
-        inactive_workspace #313244 #313244 #cdd6f4
-        urgent_workspace #f38ba8 #f38ba8 #1e1e2e
-    }
-}
-SWAY_CONFIG
+# The config content is a single source in the repo: etc-rlos/sway.config.
+[ -f "$SCRIPT_DIR/etc-rlos/sway.config" ] || fail "etc-rlos/sway.config missing"
+install -m 0644 "$SCRIPT_DIR/etc-rlos/sway.config" "$WL_DIST/etc/sway/config"
 
 # Assert it exists and is not the upstream one we rejected - if a future change
 # ever copies upstream's copy from the build stage over this, the assertion
@@ -2556,29 +2418,23 @@ ok "background.png staged ($(du -h "$WL_DIST/usr/share/rlos/background.png" | cu
 #
 #   etc/pam.d/
 #     the service files. swaylock's ships from its own install tree and says
-#     `auth include login`; /etc/pam.d/login is written here, byte-identical to
-#     build_x11.sh's. The guest's busybox login never reads it - it checks
-#     /etc/shadow itself - it exists for the include.
+#     `auth include login`; /etc/pam.d/login comes from etc-rlos/login.pam,
+#     the same single source build_x11.sh stages. The guest's busybox login
+#     never reads it - it checks /etc/shadow itself - it exists for the include.
 mkdir -p "$WL_DIST/usr/lib64/security" "$WL_DIST/usr/sbin" "$WL_DIST/etc/pam.d"
 for mod in "$PAM_MODDIR"/*.so; do
     [ -e "$mod" ] || fail "no PAM modules under $PAM_MODDIR"
     cp -f "$mod" "$WL_DIST/usr/lib64/security/"
 done
 install -m 4755 "$WL_PREFIX/sbin/unix_chkpwd" "$WL_DIST/usr/sbin/unix_chkpwd"
-cat > "$WL_DIST/etc/pam.d/login" << 'PAMEOF'
-# Staged by build_x11.sh and build_wl.sh - byte-identical in both images.
-#
-# busybox login does not read this file; i3lock's service file includes it, so
-# every credential check the locker makes lands in the two lines below.
-auth     required pam_unix.so
-account  required pam_unix.so
-PAMEOF
+[ -f "$SCRIPT_DIR/etc-rlos/login.pam" ] || fail "etc-rlos/login.pam missing"
+install -m 0644 "$SCRIPT_DIR/etc-rlos/login.pam" "$WL_DIST/etc/pam.d/login"
 [ -f "$WL_PREFIX/etc/pam.d/swaylock" ] \
     || fail "swaylock's pam.d service file was not installed"
 cp -f "$WL_PREFIX/etc/pam.d/swaylock" "$WL_DIST/etc/pam.d/swaylock"
 ok "PAM staged (pam_unix.so, unix_chkpwd 4755, pam.d/swaylock + login)"
 
-ok "sway config written ($(wc -l < "$WL_DIST/etc/sway/config") lines, no build-host paths)"
+ok "sway config staged from etc-rlos ($(wc -l < "$WL_DIST/etc/sway/config") lines, no build-host paths)"
 
 # ---- ldd closure ------------------------------------------------------------
 # Resolve with LD_LIBRARY_PATH pointed at the prefix. Without it ldd falls back

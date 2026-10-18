@@ -1,0 +1,9 @@
+# Staged by build_x11.sh - the one family the guest ships. fontconfig's
+# monospace/sans-serif aliases in etc/fonts/fonts.conf point here too.
+#
+# Both keys are given. ui_font_config.c stores a DEFAULT entry separately and
+# falls back to it for any charset without its own line, but naming the Unicode
+# charset explicitly as well removes any doubt about which line an ASCII cell
+# in a UTF-8 session actually resolves through.
+DEFAULT = JetBrainsMono Nerd Font Mono
+ISO10646_UCS4_1 = JetBrainsMono Nerd Font Mono

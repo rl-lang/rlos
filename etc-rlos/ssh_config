@@ -1,0 +1,16 @@
+# /etc/ssh/ssh_config - system-wide client defaults (rlos)
+#
+# Deliberately short. The only thing worth setting system-wide is keepalive:
+# without it, a client whose network silently vanished (cable pulled, wifi
+# slept) blocks forever on a TCP connection that will never error. ServerAlive
+# makes ssh notice and retry.
+ServerAliveInterval 30
+ServerAliveCountMax 3
+
+# Use the system-wide known_hosts. The per-user file still takes precedence;
+# this only affects the case where a user has none.
+GlobalKnownHostsFile /etc/ssh/ssh_known_hosts
+
+# BatchMode is NOT set: a first connection to a new host should be able to
+# prompt for a fingerprint. Making that fail-by-default trades a real
+# usability win for a small security nicety that host keys already cover.

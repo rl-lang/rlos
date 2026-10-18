@@ -1,0 +1,41 @@
+# /etc/ssh/sshd_config - rlos server
+Port 22
+AddressFamily any
+
+# root is locked; log in as `user` and sudo. Do not enable root login.
+PermitRootLogin no
+
+# See the note in build_nettools.sh: with one local account, no PAM, and no
+# persistence, password auth is the only workable network login. Set to yes
+# deliberately.
+PasswordAuthentication yes
+PubkeyAuthentication yes
+
+# No PAM in this rootfs; read /etc/passwd and /etc/shadow directly.
+UsePAM no
+
+# No client-side X to forward to.
+X11Forwarding yes
+
+# sftp subsystem. NOT optional, and the omission is invisible until someone
+# runs sftp or scp: OpenSSH has no built-in default for this, so with the line
+# absent the subsystem is simply not registered and every client gets
+#
+#   subsystem request failed on channel 0
+#
+# scp is affected too, because since OpenSSH 9 scp speaks SFTP by default rather
+# than the legacy rcp protocol. `scp -O` still works without this, which is a
+# confusing workaround because the failure looks like a missing binary rather
+# than a missing config line.
+#
+# Path matches where this script stages sftp-server (see the helpers block above).
+Subsystem sftp /usr/lib64/misc/sftp-server
+
+# Give up on a stalled auth quickly rather than letting a connection hang for
+# the 120s default.
+LoginGraceTime 20
+
+# Keep a reasonable number of sessions; the framebuffer guest is not a
+# multi-tenant server.
+MaxStartups 10:30:60
+MaxSessions 10

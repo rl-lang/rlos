@@ -272,24 +272,8 @@ header "configs"
 # keepalive so a laptop suspend doesn't leave ssh wedged, and modern key
 # exchange by simply not listing the legacy ones (client defaults are already
 # modern in OpenSSH 10).
-cat > "$GUEST_ETC/ssh/ssh_config" << 'EOF'
-# /etc/ssh/ssh_config - system-wide client defaults (rlos)
-#
-# Deliberately short. The only thing worth setting system-wide is keepalive:
-# without it, a client whose network silently vanished (cable pulled, wifi
-# slept) blocks forever on a TCP connection that will never error. ServerAlive
-# makes ssh notice and retry.
-ServerAliveInterval 30
-ServerAliveCountMax 3
-
-# Use the system-wide known_hosts. The per-user file still takes precedence;
-# this only affects the case where a user has none.
-GlobalKnownHostsFile /etc/ssh/ssh_known_hosts
-
-# BatchMode is NOT set: a first connection to a new host should be able to
-# prompt for a fingerprint. Making that fail-by-default trades a real
-# usability win for a small security nicety that host keys already cover.
-EOF
+[ -f "$ROOT/etc-rlos/ssh_config" ] || fail "etc-rlos/ssh_config missing"
+install -m 0644 "$ROOT/etc-rlos/ssh_config" "$GUEST_ETC/ssh/ssh_config"
 ok "ssh_config"
 
 # sshd_config: what the server actually needs in this guest.
@@ -316,49 +300,8 @@ ok "ssh_config"
 #   X11Forwarding no
 #     There is no sshd-side X and forwarding buys nothing on a framebuffer-only
 #     guest.
-cat > "$GUEST_ETC/ssh/sshd_config" << 'EOF'
-# /etc/ssh/sshd_config - rlos server
-Port 22
-AddressFamily any
-
-# root is locked; log in as `user` and sudo. Do not enable root login.
-PermitRootLogin no
-
-# See the note in build_nettools.sh: with one local account, no PAM, and no
-# persistence, password auth is the only workable network login. Set to yes
-# deliberately.
-PasswordAuthentication yes
-PubkeyAuthentication yes
-
-# No PAM in this rootfs; read /etc/passwd and /etc/shadow directly.
-UsePAM no
-
-# No client-side X to forward to.
-X11Forwarding yes
-
-# sftp subsystem. NOT optional, and the omission is invisible until someone
-# runs sftp or scp: OpenSSH has no built-in default for this, so with the line
-# absent the subsystem is simply not registered and every client gets
-#
-#   subsystem request failed on channel 0
-#
-# scp is affected too, because since OpenSSH 9 scp speaks SFTP by default rather
-# than the legacy rcp protocol. `scp -O` still works without this, which is a
-# confusing workaround because the failure looks like a missing binary rather
-# than a missing config line.
-#
-# Path matches where this script stages sftp-server (see the helpers block above).
-Subsystem sftp /usr/lib64/misc/sftp-server
-
-# Give up on a stalled auth quickly rather than letting a connection hang for
-# the 120s default.
-LoginGraceTime 20
-
-# Keep a reasonable number of sessions; the framebuffer guest is not a
-# multi-tenant server.
-MaxStartups 10:30:60
-MaxSessions 10
-EOF
+[ -f "$ROOT/etc-rlos/sshd_config" ] || fail "etc-rlos/sshd_config missing"
+install -m 0644 "$ROOT/etc-rlos/sshd_config" "$GUEST_ETC/ssh/sshd_config"
 ok "sshd_config"
 
 # moduli: DH group exchange parameters. sshd reads this at startup for the
@@ -400,20 +343,8 @@ header "gitconfig"
 # - pull.rebase: false is git's default; not set.
 # - core.autocrlf: input (convert CRLF on commit, not on checkout) is the sane
 #   cross-platform default.
-cat > "$GUEST_ETC/git/config" << 'EOF'
-[init]
-	defaultBranch = main
-
-[core]
-	autocrlf = input
-	editor = nano
-
-[color]
-	ui = auto
-
-[pager]
-	log = less -FRX
-EOF
+[ -f "$ROOT/etc-rlos/git-config" ] || fail "etc-rlos/git-config missing"
+install -m 0644 "$ROOT/etc-rlos/git-config" "$GUEST_ETC/git/config"
 ok "/etc/git/config (no invented identity; nano as editor)"
 
 # ---------------------------------------------------------------------------
@@ -433,10 +364,8 @@ else
   warn "host does not report C.UTF-8 in locale -a; staging definition anyway"
   warn "  guest may fall back to C. Verify after boot."
 fi
-cat > "$GUEST_ETC/locale.conf" << 'EOF'
-LANG=C.UTF-8
-LC_ALL=C.UTF-8
-EOF
+[ -f "$ROOT/etc-rlos/locale.conf" ] || fail "etc-rlos/locale.conf missing"
+install -m 0644 "$ROOT/etc-rlos/locale.conf" "$GUEST_ETC/locale.conf"
 ok "/etc/locale.conf -> C.UTF-8"
 
 # ---------------------------------------------------------------------------

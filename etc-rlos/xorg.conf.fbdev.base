@@ -1,0 +1,40 @@
+Section "ServerFlags"
+  # No VT switching: init owns the console, and the text console stays
+  # reachable on Ctrl-Alt-F2.
+  Option "AutoAddGPU" "off"
+  Option "DontZap" "off"
+EndSection
+
+Section "Device"
+  Identifier  "fbdev0"
+  Driver      "fbdev"
+  Option      "fbdev" "/dev/fb0"
+EndSection
+
+Section "Screen"
+  Identifier  "screen0"
+  Device      "fbdev0"
+  # Depth 24 on a 32bpp framebuffer, and that is not a typo.
+  #
+  # /dev/fb0 is 32bpp XRGB8888, but DRM_FBDEV_EMULATION does not report
+  # FB_VISUAL_TRUECOLOR, so fbdevHWGetDepth() in fbdevhw.c falls through to
+  # bits_per_pixel and hands the server depth 32. xf86SetWeight() in
+  # xf86Helper.c has no `case 32:` and so leaves the weight at 000, and its
+  # consistency check (depth must equal r+g+b) aborts startup with
+  #   (EE) FBDEV(0): Weight given (000) is inconsistent with the depth (32)
+  #   (EE) Screen(s) found, but none have a usable configuration.
+  #   (EE) Fatal server error: no screens found
+  # Asking for depth 24 makes the 8/8/8 default apply and the check pass. The
+  # 32nd bit per pixel is just the unused X byte, so a depth 24 TrueColor
+  # visual maps straight onto the framebuffer with no conversion.
+  #
+  # The modesetting template deliberately has NO DefaultDepth: it takes its
+  # depth from the real DRM mode, and xf86SetDepthBpp skips the config's
+  # DefaultDepth entirely when -depth or -fbbpp is present, so a hardcoded
+  # value here would override the mode the hardware actually reported.
+  DefaultDepth 24
+  SubSection "Display"
+    Depth 24
+    Visual "TrueColor"
+  EndSubSection
+EndSection

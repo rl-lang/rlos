@@ -65,48 +65,8 @@ info "left absent on purpose: init.c generates it on first boot"
 # system.conf
 # ---------------------------------------------------------------------------
 header "system.conf"
-cat > "$CONF_DIR/system.conf" << 'CONF'
-<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-BUS Bus Configuration 1.0//EN"
- "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
-<busconfig>
-
-  <!-- Only the system bus is run. There is no session bus: this is a live
-       system with one user, and a per-user session bus would add a second
-       daemon, a second socket and a second identity to keep working. -->
-  <type>system</type>
-  <listen>unix:path=/run/dbus/system_bus_socket</listen>
-
-  <!-- Policy is deliberately permissive within the system bus. The bus is only
-       reachable by processes already inside this system, and the alternative -
-       a per-service allowlist - means every daemon added later is silently
-       non-functional until someone remembers to edit a policy file. -->
-  <policy context="default">
-    <allow user="*"/>
-    <allow own="*"/>
-    <allow send_type="method_call"/>
-    <allow send_type="signal"/>
-    <allow send_type="method_return"/>
-    <allow send_type="error"/>
-    <allow receive_type="method_call"/>
-    <allow receive_type="method_return"/>
-    <allow receive_type="error"/>
-    <allow receive_type="signal"/>
-  </policy>
-
-  <!-- Root must be able to own the bus name and to authenticate, or nothing
-       else gets to connect at all. -->
-  <policy user="root">
-    <allow own="org.freedesktop.DBus"/>
-  </policy>
-
-  <limit name="max_message_size">134217728</limit>
-  <limit name="max_incoming_bytes">1073741824</limit>
-  <limit name="max_outgoing_bytes">1073741824</limit>
-  <limit name="max_replies_per_connection">512</limit>
-  <limit name="max_match_rules_per_connection">2048</limit>
-  <limit name="max_names_per_connection">2048</limit>
-</busconfig>
-CONF
+[ -f "$ROOT/etc-rlos/dbus-system.conf" ] || die "etc-rlos/dbus-system.conf missing"
+install -m 0644 "$ROOT/etc-rlos/dbus-system.conf" "$CONF_DIR/system.conf"
 info "system.conf written (minimal: no service policy, no SELinux)"
 
 # ---------------------------------------------------------------------------

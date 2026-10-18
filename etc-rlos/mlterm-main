@@ -1,0 +1,42 @@
+# Staged by build_x11.sh - do not edit in place.
+#
+# Tokyo Night Moon. The desktop is deliberately DARKER than the terminal: see
+# etc/i3.config for the layering (bar #16161e, desktop #1a1b26, window #24273b).
+# The window being the lightest surface is what makes a borderless terminal read
+# as a window instead of a hole in the desktop.
+termtype = mlterm-256color
+type_engine = xft
+use_aafont = true
+# Force the fontconfig engine even if aafont were somehow not used, so a
+# bitmap-font fallback can never happen in a guest that ships no bitmap fonts.
+use_anti_alias = true
+# 16 is mlterm's own default; the earlier 12 was a mistake and looked tiny.
+fontsize = 16
+# 10000 lines is plenty for a debugging session and costs nothing until used -
+# mlterm allocates the scrollback as it is filled, not up front.
+scrollback_lines = 10000
+# Colours. mlterm resolves these through XParseColor (uitoolkit/xlib/ui_color.c),
+# which is why "#rrggbb" works here and not just a colour name.
+#
+#   bg #24273b is Moon's background, and is deliberately LIGHTER than the #1a1b26
+#      desktop behind it, so the window has a visible edge with borders off.
+#   fg #cad3f5 is Moon's foreground.
+#   cursor #7dcfff is the same accent the i3 bar uses for the focused workspace,
+#      so the caret and the bar highlight are the one colour.
+bg_color = #24273b
+fg_color = #cad3f5
+cursor_fg_color = #24273b
+cursor_bg_color = #7dcfff
+# Bold and italic are real font faces here, not synthetic: build_x11.sh stages
+# JetBrainsMonoNerdFontMono-{Italic,BoldItalic}.ttf alongside Regular and Bold.
+# Without those two files these keys would still work, but Xft would draw a
+# slanted synthetic oblique instead of the typeface's own italic.
+use_bold_font = true
+use_italic_font = true
+# No `scrollbar`: the bar is already the tallest thing on screen and a second
+# always-visible scrollbar competes with the text for the right edge.
+scrollbar = false
+# Deliberately NOT set: alpha (needs a 32-bit ARGB visual AND a compositor -
+# this image has neither, so it would be an inert line that looks like it works)
+# and border_width (i3 sets border none on every window, so a 2px mlterm border
+# would make the terminal the only framed window in the session).

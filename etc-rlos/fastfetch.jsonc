@@ -1,0 +1,38 @@
+{
+  "logo": {
+    "source": "/usr/share/rlos/ff_logo.txt",
+    "color": {
+      "1": "#DC143C",
+      "2": "#7A0C22",
+      "3": "#E34234",
+      "4": "#7A241D",
+      "5": "#82AAFF",
+      "6": "#44557A",
+      "7": "#C099FF",
+      "8": "#5C4A80"
+    }
+  },
+  "modules": [
+    "title",
+    "separator",
+    "os",
+    "host",
+    "kernel",
+    "initsystem",
+    "uptime",
+    "break",
+    "shell",
+    "wm",
+    "font",
+    "editor",
+    "terminal",
+    "break",
+    "cpu",
+    "gpu",
+    "memory",
+    "disk",
+    "battery",
+    "break",
+    "colors"
+  ]
+}

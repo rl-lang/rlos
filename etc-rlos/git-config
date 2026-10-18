@@ -1,0 +1,12 @@
+[init]
+	defaultBranch = main
+
+[core]
+	autocrlf = input
+	editor = nano
+
+[color]
+	ui = auto
+
+[pager]
+	log = less -FRX
