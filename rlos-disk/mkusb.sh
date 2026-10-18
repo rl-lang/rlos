@@ -527,19 +527,22 @@ serial --unit=0 --speed=115200
 terminal_input serial console
 terminal_output serial gfxterm
 
-# No fbcon=font: here. Under UEFI the kernel prefers DRM_I915 when it finds the
-# GPU, and falls back to DRM_EFIDRM otherwise; the framebuffer that GRUB drew
-# into is not necessarily the one the console ends up on. Forcing a font size
-# across that handover is fragile, and its failure mode is exactly a bare cursor
-# with no text. The font is cosmetic, so it is not requested by default here.
+# fbcon=font:SUN12x22, same as the BIOS entry. The kernel carries the face
+# built in (CONFIG_FONT_SUN12x22) and tty0 is the console the shell and klogd
+# land on, so the session should render in 12x22. Under UEFI the kernel prefers
+# DRM_I915 and falls back to DRM_EFIDRM, so the handover is DRM-to-DRM; if a
+# machine ever comes up here with a bare cursor and no text, the fontless
+# "rlOS (text mode / nomodeset)" and "rlOS (serial)" entries below are the
+# escape hatches.
 menuentry "rlOS" {
-  linux /boot/bzImage root=PARTUUID=$ROOT_PARTUUID rootfstype=ext4 rw rootwait console=ttyS0,115200 console=tty0 loglevel=3
+  linux /boot/bzImage root=PARTUUID=$ROOT_PARTUUID rootfstype=ext4 rw rootwait console=ttyS0,115200 console=tty0 loglevel=3 fbcon=font:SUN12x22
 }
 
 # Recovery entry for a screen that shows only a bare cursor after handover.
 # nomodeset forces legacy VGA text mode, so console=tty0 has something to write
-# into even when the UEFI framebuffer is unusable. Also drops the fbcon font
-# request and raises loglevel. Use this to separate "the kernel ran but the video
+# into even when the UEFI framebuffer is unusable. Deliberately carries no
+# fbcon=font: (one less variable in the handover this entry exists to survive)
+# and raises loglevel. Use this to separate "the kernel ran but the video
 # handover failed" from "the kernel never reached root" - the latter prints VFS
 # errors here, the former prints nothing.
 menuentry "rlOS (text mode / nomodeset)" {

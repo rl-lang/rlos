@@ -139,6 +139,9 @@ CONFIG_FEATURE_SH_STANDALONE=y
 CONFIG_DESKTOP=y
 CONFIG_LONG_OPTS=y
 CONFIG_FEATURE_VERBOSE_USAGE=y
+# setfont searches $CONFIG_DEFAULT_SETFONT_DIR/consolefonts for a bare font
+# name; assemble-rootfs.sh stages sun12x22.psfu.gz into /usr/share/consolefonts.
+CONFIG_DEFAULT_SETFONT_DIR="/usr/share"
 CFGEOF
 yes '' 2>/dev/null | make oldconfig > /tmp/opencode/busybox-oldconfig.log 2>&1 || true
 REASSIGN="$(grep -c 'reassign symbol' /tmp/opencode/busybox-oldconfig.log || true)"

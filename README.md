@@ -249,7 +249,18 @@ from "the kernel never reached root" - the latter prints VFS errors, the former 
 nothing. This is worth knowing about on real UEFI hardware: the kernel prefers
 `DRM_I915` when it finds the GPU and falls back to `DRM_EFIDRM` otherwise, so the
 framebuffer GRUB drew into is not always the one the console ends up on. The default
-entry therefore does not request an `fbcon` font.
+entry requests `fbcon=font:SUN12x22` (the kernel carries the face built in,
+`CONFIG_FONT_SUN12x22`); the text-mode and serial entries are deliberately fontless,
+so they remain the escape hatches if that ever renders as a bare cursor.
+
+The console font is also swappable at runtime. Every image stages
+`/usr/share/consolefonts/sun12x22.psfu.gz` - the loadable PSF twin of the kernel's
+SUN12x22 face - and busybox's `setfont` is built in, so `setfont sun12x22.psfu.gz`
+as root reloads the current VT in 12x22. The bare name resolves because
+`CONFIG_DEFAULT_SETFONT_DIR=/usr/share` is compiled into busybox and `setfont`
+appends `/consolefonts`; a full path works too. The kernel's built-in copy can only
+be selected at boot via `fbcon=font:SUN12x22`, which is what the stick and ISO
+entries do.
 
 **`rootwait` is mandatory on the installed stick.** Every entry carries it, and it is
 not a precaution. An installed stick has no initramfs, so the root filesystem is

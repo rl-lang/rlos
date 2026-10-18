@@ -309,6 +309,21 @@ if [[ -d "$SCRIPT_SRC" ]]; then
     fi
 fi
 
+# Console fonts. sun12x22.psfu.gz is the loadable twin of the kernel's own
+# SUN12x22 face (CONFIG_FONT_SUN12x22, selected with fbcon=font:SUN12x22 on the
+# stick and ISO entries). The kernel built-in can only be chosen on the command
+# line; busybox setfont is compiled in but has nothing to load without a file,
+# so stage it under the directory setfont searches by bare name
+# (CONFIG_DEFAULT_SETFONT_DIR=/usr/share in build_busybox.sh).
+CONSOLEFONT_SRC="$SCRIPT_DIR/etc-rlos/consolefonts"
+if [[ -d "$CONSOLEFONT_SRC" ]]; then
+    mkdir -p "$TARGET/usr/share/consolefonts"
+    install -m 0644 "$CONSOLEFONT_SRC"/*.psfu.gz "$TARGET/usr/share/consolefonts/"
+    substep "console fonts: $(ls "$CONSOLEFONT_SRC"/*.psfu.gz | wc -l) staged in usr/share/consolefonts"
+else
+    fail "etc-rlos/consolefonts/ missing - setfont would have no font to load"
+fi
+
 header "Base tools and desktop"
 # Tools with no X11 dependency, staged into every image regardless of -x.
 # Separate from x11-dist/ so the -x flag cannot take sudo and ttyrec with it.
