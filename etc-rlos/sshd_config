@@ -14,7 +14,9 @@ PubkeyAuthentication yes
 # No PAM in this rootfs; read /etc/passwd and /etc/shadow directly.
 UsePAM no
 
-# No client-side X to forward to.
+# X11 forwarding stays enabled: sshd mints an xauth cookie per session, and
+# the -x image ships xauth, so a remote client can display guest X apps. Images
+# without xauth fail that one request, never the server itself.
 X11Forwarding yes
 
 # sftp subsystem. NOT optional, and the omission is invisible until someone

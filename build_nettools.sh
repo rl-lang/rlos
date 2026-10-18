@@ -297,9 +297,10 @@ ok "ssh_config"
 #     defaults to UsePAM yes and would fail to start. Setting no lets it use
 #     /etc/passwd + /etc/shadow directly, which is exactly what it wants.
 #
-#   X11Forwarding no
-#     There is no sshd-side X and forwarding buys nothing on a framebuffer-only
-#     guest.
+#   X11Forwarding yes
+#     sshd sets up an xauth cookie per session; the -x image ships xauth
+#     (build_x11.sh), so remote clients can display guest X apps. Images
+#     without it fail the forwarding request only, not the server.
 [ -f "$ROOT/etc-rlos/sshd_config" ] || fail "etc-rlos/sshd_config missing"
 install -m 0644 "$ROOT/etc-rlos/sshd_config" "$GUEST_ETC/ssh/sshd_config"
 ok "sshd_config"
