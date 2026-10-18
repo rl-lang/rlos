@@ -303,9 +303,12 @@ grim.repo=https://gitlab.freedesktop.org/emersion/grim
 grim.sha=155adb1
 grim.note=v1.5.0-5-g155adb1
 
-wf-recorder.repo=https://gitlab.freedesktop.org/emersion/wf-recorder
+wf-recorder.repo=https://github.com/ammen99/wf-recorder
 wf-recorder.sha=c5de474
-wf-recorder.note=v0.6.0-5-gc5de474
+wf-recorder.note=v0.6.0-5-gc5de474; moved off gitlab.freedesktop.org/emersion, which
+  now demands auth on clone; maintained by ammen99. Does not build against
+  ffmpeg 9 as-is - patches/wf-recorder-ffmpeg9.patch carries Arch's downstream
+  port (avcodec_get_supported_config) until upstream issue #350 lands.
 
 foot.repo=https://gitlab.freedesktop.org/foot/foot
 foot.sha=22ea7111

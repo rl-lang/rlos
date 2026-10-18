@@ -874,9 +874,9 @@ fi
 # host this machine cannot reliably reach, but its GitLab tags are complete, and
 # pins.lock's [git] section pins a commit hash just as well as a sha256.
 #
-# Mesa (stage 4, the GLES2 renderer) and XWayland (stage 5, the X server for
-# the X apps) are both in this block now. What remains deferred is ffmpeg
-# (stage 6), which is where wf-recorder's recording support lands.
+# Mesa (stage 4, the GLES2 renderer), XWayland (stage 5, the X server for the
+# X apps) and ffmpeg (stage 6, wf-recorder's encoder backend plus the ffmpeg/
+# ffplay pair) are all in this block now.
 # ===========================================================================
 if [[ "$STAGE" -ge 3 ]]; then
 
@@ -1490,37 +1490,163 @@ meson_build grim "$WL_SRC/grim" ".wl-grim.log" \
 need_bin grim "grim"
 ok "grim built"
 
-header "wf-recorder (screen and audio recorder)"
+# --- ffmpeg: wf-recorder's encoder backend, plus the ffmpeg/ffplay CLIs ------
+# Why an ffmpeg exists in the -w image at all: wf-recorder is not a wrapper
+# around the ffmpeg executable. It captures via wlr-screencopy (the same
+# protocol grim uses) and hands the frames to the ffmpeg LIBRARIES directly.
+# Its meson.build:111-117 requires libavutil, libavcodec, libavformat,
+# libavfilter and libswresample with no required: false on any of them, and its
+# DEFAULT_CODEC is libx264 - so there is no "recorder-only" smaller build: a
+# recorder means an ffmpeg in the image.
+#
+# The license and size arguments are the ones build_x11.sh:123-183 already makes
+# for the -x side, and they apply verbatim: GPL via libx264 is deliberate (the
+# kernel, busybox and git already put this image under GPL obligations), and
+# --disable-everything plus an explicit allowlist is the size lever - a default
+# ffmpeg is ~35MB of codecs for formats this image never encounters.
+#
+# The list values below are COMMA-separated single arguments. That is not a
+# style choice: ffmpeg's configure parses them as one option value, so a
+# space-separated list matches nothing, prints a WARNING, and exits 0 with
+# every demuxer/decoder/encoder/parser/muxer/filter switched off - an ffmpeg
+# that builds clean and cannot encode a frame. The configure-warning gate below
+# exists to catch exactly that, and list traps like indev=x11grab vs xcbgrab.
+#
+# Difference from build_x11.sh: no --enable-indev at all. There is no Wayland
+# screen-capture indev in ffmpeg (kmsgrab needs DRM master, which sway holds),
+# so capture in this image IS wf-recorder; ffmpeg here encodes, decodes and
+# plays back.
+#
+# x264 and SDL2 come from the build host through pkg-config, exactly as on the
+# -x side. Their .so files are staged by the closure walker below and the final
+# DT_NEEDED gate proves the dist resolves them internally - the same
+# host-staged-and-asserted arrangement SDL2 gets in build_x11.sh, not a silent
+# host binding.
+FFMPEG_VER="9.0.2"   # pins.lock
+FFMPEG_URL="https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VER}.tar.xz"
+FFMPEG_PROTOCOLS="file,pipe"
+FFMPEG_DEMUXERS="matroska,mov,avi,flv,mpegts,ogg,wav,aiff,mp3,image2,image2pipe,gif"
+# rawvideo is the one non-obvious decoder: captures are raw frames, so
+# re-encoding or playing a raw capture needs it, and ffmpeg CLI pipe workflows
+# (image2pipe/rawvideo) are how a still or clip is extracted from one.
+FFMPEG_DECODERS="rawvideo,h264,hevc,vp8,vp9,av1,mpeg4,mpeg2video,mjpeg,png,apng,gif,aac,ac3,eac3,mp3,flac,vorbis,opus,alac,pcm_s16le,pcm_u8,tta,wavpack"
+FFMPEG_PARSERS="h264,hevc,av1,vp9,aac,ac3,mpegaudio,mpegvideo,h263"
+FFMPEG_ENCODERS="libx264,mjpeg,png,gif"
+FFMPEG_MUXERS="matroska,mp4,image2,gif,null,rawvideo"
+FFMPEG_FILTERS="scale,format"
 
-# SKIPPED, and deliberately so: wf-recorder hard-requires ffmpeg.
-#
-# meson.build:111-118 lists libavutil, libavcodec, libavformat, libavfilter and
-# gbm, and every one but libavdevice is dependency(..., ) with no
-# required: false - there is no option to build without them. So a wf-recorder
-# binary means an ffmpeg in the image, and ffmpeg from source is the single
-# largest build in this whole chain by a wide margin (x264/x265 if not disabled,
-# plus every codec/demuxer). It is stage 6 work, on its own, not something to
-# drag in alongside the compositor.
-#
-# gbm - the other dependency wf-recorder names - now exists: Mesa is built
-# above and its libgbm is in the prefix. ffmpeg is the whole remaining gap.
-#
-# Recording is genuinely useful in a compositor image, so this is a real gap and
-# not a "nice to have" - but shipping a recorder that links the build host's
-# ffmpeg, which is what happens if this is merely left enabled, would be exactly
-# the unpinned dependency the whole prefix exists to avoid. Skipping is the
-# honest state; it is not a silent one.
-WL_SKIP_WFRECORDER=1
+header "ffmpeg ${FFMPEG_VER} (wf-recorder's encoder backend; ffmpeg + ffplay CLI)"
 
-if [ -n "$WL_SKIP_WFRECORDER" ]; then
-    skip "wf-recorder deferred: needs ffmpeg (stage 6); Mesa's gbm is in place"
+pins_fetch "$FFMPEG_URL" "$WL_SRC/ffmpeg-${FFMPEG_VER}.tar.xz" "ffmpeg"
+unpack "$WL_SRC/ffmpeg-${FFMPEG_VER}.tar.xz" "$WL_SRC/ffmpeg-${FFMPEG_VER}"
+FFMPEG_SRC="$WL_SRC/ffmpeg-${FFMPEG_VER}"
+[ -x "$FFMPEG_SRC/configure" ] || fail "ffmpeg has no configure"
+step "configure (--disable-everything, then allowlist; this is the size lever)"
+# configure is NOT run quietly here, because its failure mode is a WARNING on
+# stderr followed by exit 0: an option that matches nothing is dropped silently,
+# and ffbuild/config.log does not contain the warning - only stderr does. So the
+# output is captured explicitly and grepped, and any warning is fatal.
+FF_CONFIG_LOG="$(mktemp)"
+if ! ( cd "$FFMPEG_SRC" && ./configure \
+    --prefix="$WL_PREFIX" --libdir="$WL_PREFIX/lib64" \
+    --disable-everything \
+    --disable-doc --disable-debug --disable-ffprobe \
+    --enable-ffmpeg --enable-ffplay \
+    --enable-gpl --enable-libx264 \
+    --enable-sdl2 \
+    --enable-protocol="$FFMPEG_PROTOCOLS" \
+    --enable-demuxer="$FFMPEG_DEMUXERS" \
+    --enable-decoder="$FFMPEG_DECODERS" \
+    --enable-parser="$FFMPEG_PARSERS" \
+    --enable-encoder="$FFMPEG_ENCODERS" \
+    --enable-muxer="$FFMPEG_MUXERS" \
+    --enable-filter="$FFMPEG_FILTERS" ) > "$FF_CONFIG_LOG" 2>&1; then
+    tail -20 "$FF_CONFIG_LOG" | sed 's/^/         /'
+    fail "ffmpeg configure failed"
+fi
+FF_WARNINGS="$(grep '^WARNING' "$FF_CONFIG_LOG" || true)"
+if [ -n "$FF_WARNINGS" ]; then
+    echo "FAIL: ffmpeg configure warned; an option name is wrong and was silently dropped" >&2
+    echo "$FF_WARNINGS" | head -10 | sed 's/^/         /' >&2
+    echo "         (ffmpeg exits 0 on unmatched --enable-X; a wrong list name is not an error)" >&2
+    rm -f "$FF_CONFIG_LOG"
+    exit 1
+fi
+rm -f "$FF_CONFIG_LOG"
+ok "ffmpeg configure clean (no silently-dropped options)"
+step "make + install"
+( cd "$FFMPEG_SRC" && \
+  make $JOBS_FLAG > "$SCRIPT_DIR/.wl-ffmpeg.log" 2>&1 && \
+  make install >> "$SCRIPT_DIR/.wl-ffmpeg.log" 2>&1 ) \
+  || { fail "ffmpeg build failed"; tail -25 "$SCRIPT_DIR/.wl-ffmpeg.log" | sed 's/^/         /'; exit 1; }
+need_bin ffmpeg "ffmpeg"
+need_bin ffplay "ffplay"
+# The default codec is the gate that matters: wf-recorder's DEFAULT_CODEC is
+# libx264 (build/config.h), and a libx264-less ffmpeg fails only at RECORD
+# time, with "Unknown encoder 'libx264'". Caught at build time instead. The
+# output is captured before matching: `binary | grep -q` under pipefail can
+# kill the binary with SIGPIPE on the first match and fail a passing check.
+FF_ENCODERS="$(env LD_LIBRARY_PATH="$WL_RUNTIME_LD_PATH" "$WL_PREFIX/bin/ffmpeg" -hide_banner -encoders 2>/dev/null || true)"
+[[ "$FF_ENCODERS" == *libx264* ]] \
+    || fail "ffmpeg built without libx264 - wf-recorder's default codec cannot encode"
+# ffplay's loader path, checked without a display: -version is handled before
+# SDL opens any device, so this proves the dynamic linking (libav*, SDL2 and
+# SDL2's own NEEDED chain) that a missing soname would otherwise break at
+# first use, before main().
+env LD_LIBRARY_PATH="$WL_RUNTIME_LD_PATH" "$WL_PREFIX/bin/ffplay" -hide_banner -version > /dev/null 2>&1 \
+    || fail "ffplay does not run - loader or SDL2 problem (check .wl-ffmpeg.log)"
+ok "ffmpeg + ffplay built (libx264 for wf-recorder, SDL2 playback for ffplay)"
+
+header "wf-recorder (video recorder - wlr-screencopy + libav* encoders)"
+
+# From ammen99's GitHub repo, NOT the gitlab.freedesktop.org/emersion URL this
+# pin used to name: that repo now answers an unauthenticated clone with a login
+# prompt, so a clean build fails there before anything is even checked out.
+# Pinned by COMMIT, the same pattern as swaylock above - pins.lock's
+# wf-recorder.sha is the pin and the checkout below is what makes it mean
+# something. v0.6.0-5-gc5de474 deliberately tracks master past the last tag
+# (the same reasoning xfiles and xmenu record in pins.lock).
+WF_RECORDER_REPO="https://github.com/ammen99/wf-recorder"
+WF_RECORDER_SHA="c5de47440e8e81c92befb696cb69819cdb3bfe8a"   # v0.6.0-5-gc5de474, see pins.lock
+if [ ! -d "$WL_SRC/wf-recorder/.git" ]; then
+    GIT_TERMINAL_PROMPT=0 git clone --quiet "$WF_RECORDER_REPO" "$WL_SRC/wf-recorder" \
+        || fail "wf-recorder clone failed: $WF_RECORDER_REPO"
+fi
+git -C "$WL_SRC/wf-recorder" checkout --quiet "$WF_RECORDER_SHA" \
+    || fail "wf-recorder: cannot check out pinned commit $WF_RECORDER_SHA"
+
+# The pinned commit does not compile against this image's ffmpeg 9: it still
+# reads AVCodec.pix_fmts, .sample_fmts and .ch_layouts, which ffmpeg removed
+# (deprecated in 7.1, when avcodec_get_supported_config() replaced them; the
+# upstream issue is open with no merged fix). Arch, Fedora and FreeBSD all
+# carry the same downstream port, and patches/wf-recorder-ffmpeg9.patch is that
+# port with its provenance in the header. It is applied here rather than priced
+# into the pin because there is no upstream fix to pin yet; drop it when there
+# is one. The two-way check makes re-runs idempotent: the source tree outlives
+# a run, so "already applied" is the normal state on the second run.
+WF_RECORDER_PATCH="$SCRIPT_DIR/patches/wf-recorder-ffmpeg9.patch"
+[ -f "$WF_RECORDER_PATCH" ] || fail "wf-recorder patch missing: $WF_RECORDER_PATCH"
+step "ffmpeg-9 compatibility patch"
+if git -C "$WL_SRC/wf-recorder" apply --check --reverse "$WF_RECORDER_PATCH" 2>/dev/null; then
+    info "patch already applied"
+elif git -C "$WL_SRC/wf-recorder" apply --check "$WF_RECORDER_PATCH" 2>/dev/null; then
+    git -C "$WL_SRC/wf-recorder" apply "$WF_RECORDER_PATCH" \
+        || fail "wf-recorder: ffmpeg-9 patch failed to apply"
+    ok "ffmpeg-9 patch applied"
+else
+    fail "wf-recorder: ffmpeg-9 patch applies neither way - upstream frame-writer.cpp moved?"
 fi
 
-# The rest of the block is kept, correct and commented, so that turning the skip
-# off after stage 6 lands is a one-line change rather than a reconstruction.
-if [ -z "$WL_SKIP_WFRECORDER" ]; then
-[ -d "$WL_SRC/wf-recorder" ] || git_clone "https://gitlab.freedesktop.org/emersion/wf-recorder" "v0.6.0" "$WL_SRC/wf-recorder"
 step "meson + ninja"
+# build/ is removed first, and that is not belt-and-braces. `meson setup` on a
+# directory that is ALREADY CONFIGURED prints "Directory already configured",
+# exits 0, and re-resolves nothing. A build dir from before the ffmpeg above
+# existed has the build host's libav* paths baked into its link line forever -
+# the exact unpinned host binding this script exists to prevent - and meson
+# never notices. A clean configure re-resolves every dependency against the
+# prefix (the fresh .pc files above are why this is the first configure that
+# can find them).
+rm -rf "$WL_SRC/wf-recorder/build"
 # Audio is disabled deliberately and this needs saying. Both backends are D-Bus
 # clients: pipewire over the session bus, pulse over its own protocol. This
 # image has no D-Bus daemon, no pipewire and no pulseaudio, and none of them are
@@ -1537,8 +1663,14 @@ step "meson + ninja"
 meson_build wf-recorder "$WL_SRC/wf-recorder" ".wl-wfrec.log" \
     -Ddefault_audio_backend=auto -Dpulse=disabled -Dpipewire=disabled
 need_bin wf-recorder "wf-recorder"
+# Note what is NOT in this list: libav*. The prefix's ffmpeg installs static
+# libraries only (no --enable-shared, the same configure build_x11.sh uses), so
+# wf-recorder absorbs libav* at link time exactly like ffmpeg and ffplay do.
+# What remains are the libraries the static code pulls in - x264, libva - and
+# the closure walker below stages those like any other host-resolved NEEDED.
+WF_NEEDED="$(objdump -p "$WL_PREFIX/bin/wf-recorder" | sed -n 's/^ *NEEDED *//p' | tr '\n' ' ')"
+info "wf-recorder links: ${WF_NEEDED:- nothing}"
 ok "wf-recorder built (video only: no pipewire or pulse in this image)"
-fi
 
 header "tllist + fcft (foot's font rasteriser, and its intrusive list library)"
 
@@ -1605,10 +1737,10 @@ ok "foot built"
 header "Stage: dist (staging wayland-dist/ from wl-prefix/)"
 
   # The user-visible surface: the compositor and bar, the tools to drive it,
-  # the wallpaper daemon it spawns, the terminal and the locker. Session files
-  # and the seatd helper get added below.
-  for b in sway swaybar swaymsg swaynag swaybg foot grim wf-recorder swaylock; do
-    # wf-recorder is skipped above and simply will not exist; the others must.
+  # the wallpaper daemon it spawns, the terminal, the locker, and the recorder
+  # with the ffmpeg/ffplay pair it encodes through. Session files and the seatd
+  # helper get added below.
+  for b in sway swaybar swaymsg swaynag swaybg foot grim wf-recorder swaylock ffmpeg ffplay; do
     if [ -x "$WL_PREFIX/bin/$b" ]; then
         cp -f "$WL_PREFIX/bin/$b" "$WL_DIST/bin/"
     fi
@@ -2724,6 +2856,4 @@ for b in $(ls "$WL_DIST/bin" 2>/dev/null); do
     printf "       %-14s %s\n" "$b" "$(du -h "$WL_DIST/bin/$b" | cut -f1)"
 done
 info "renderers: pixman always; GLES2 available through Mesa softpipe"
-info "still to do:"
-info "  - ffmpeg (stage 6), which unblocks wf-recorder"
-info "  - a boot test of the lockers: swaylock on -w, i3lock on -x"
+info "recording: wf-recorder (video only, libx264); stills via grim"
