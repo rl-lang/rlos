@@ -1,0 +1,1 @@
+../../core-utils/rmdir/rmdir.rl

@@ -1,34 +1,22 @@
 #!/usr/bin/env bash
 # compile_atom_init.sh - build the rlos-atom init.
 #
-# Atom and the desktop share ONE init.c, compiled twice with different -D flags.
+# Atom and the desktop now share one Rust implementation: the rlos-init crate
+# at the repo root (symlink; the source lives outside the tree). The differences
+# are compile-time features, not a second source file:
 #
-# Why shared rather than a separate atom-init.c: the parts of init that are
-# hardest to get right are exactly the parts atom still needs, and they are the
-# parts a rewrite would get wrong. Concretely, these were each a real bug found
-# the hard way in the desktop build, and every one of them applies unchanged to a
-# service container:
+#   desktop: cargo build --release
+#   atom:    cargo build --release --features atom
 #
-#   - busybox udhcpc has no -L option. Passing it makes udhcpc exit with a usage
-#     error BEFORE sending a packet, which is indistinguishable from "no DHCP
-#     server". The address is read back with SIOCGIFADDR instead.
-#   - sshd requires argv[0] to be an absolute path and exits immediately
-#     otherwise; the supervisor then restart-loops it forever, which looks like a
-#     network fault.
-#   - /var/empty must be root-owned or sshd refuses to start, and the assembler
-#     runs unprivileged so it cannot guarantee that.
-#   - OpenSSH 10 execs /usr/lib64/misc/sshd-session and sshd-auth at runtime and
-#     hard-exits 255 without them, plus sftp needs a "Subsystem sftp" config
-#     line because OpenSSH has no built-in default for it.
+# What --features atom changes is deliberately tiny. The desktop is already
+# capability-gated at runtime on /bin/Xorg existing, and atom ships no Xorg, so
+# the whole X path is skipped without a feature. The one guard that exists is
+# for the fontconfig cache: atom has no fonts and no fontconfig, so it must not
+# create or chown /tmp/fccache. Doing it as a cfg rather than a runtime test
+# means the atom binary physically cannot acquire that path.
 #
-# A second init.c would have to re-derive all of that. Sharing means it cannot
-# drift.
-#
-# What -DRLOS_ATOM actually changes is deliberately tiny, because the file was
-# already capability-gated: the desktop lives inside
-# `if (access("/bin/Xorg", X_OK) == 0)`, and atom ships no Xorg, so the whole X
-# path is skipped without a single #ifdef. The guards that exist are for the
-# handful of things that run unconditionally and are pointless in atom.
+# init.c remains in rlos-initramfs as the reference implementation and as the
+# desktop script's fallback when the crate is absent. It is not built here.
 #
 # Output:
 #
@@ -39,62 +27,61 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-SRC="$ROOT/rlos-initramfs/init.c"
+CRATE="$ROOT/rlos-init"
+BIN="$CRATE/target/release/rlos-init"
 OUT="$ROOT/rlos-atom/atom-init"
 
 source "$ROOT/build-lib.sh"
-[ -f "$SRC" ] || fail "init.c not found at $SRC"
 
-# Same flags compile_init.sh uses, so the two builds cannot drift by accident,
-# plus -DRLOS_ATOM. PIE and the fortified-source flags match the desktop build.
-CC="${CC:-gcc}"
-CFLAGS="-std=gnu11 -O2 -Wall -Wextra -Wno-unused-parameter -D_GNU_SOURCE"
-CFLAGS="$CFLAGS -fPIE -D_FORTIFY_SOURCE=2 -fstack-protector-strong"
-CFLAGS="$CFLAGS -DRLOS_ATOM"
+[ -d "$CRATE" ] || fail "rlos-init crate not found at $CRATE - add the repo-root symlink"
+[ -f "$CRATE/Cargo.toml" ] || fail "$CRATE has no Cargo.toml"
+command -v cargo > /dev/null 2>&1 || fail "cargo not found on PATH"
+command -v objdump > /dev/null 2>&1 || fail "objdump not found on PATH"
 
-header "Compiling"
-echo "  $CC $CFLAGS"
-# shellcheck disable=SC2086
-"$CC" $CFLAGS -o "$OUT" "$SRC" || fail "atom init compile failed"
+rm -f "$OUT"
 
-[ -x "$OUT" ] || fail "no output produced"
-ok "atom-init ($(du -h "$OUT" | cut -f1))"
-
-header "Verifying the guard actually bit"
-# If RLOS_ATOM were silently ignored, atom would still link but would
-# unconditionally mkdir a fontconfig cache it has no use for. Check the define
-# really reached the preprocessor rather than trusting the build to fail.
-# Not `gcc ... | grep -q`: grep -q exits at the first match, gcc takes SIGPIPE
-# on the closed pipe, and under `set -o pipefail` the whole pipeline then reports
-# failure even though the define is there. Same trap build_binutils.sh documents.
-# Write to a file first and grep that.
-DMFILE="$(mktemp)"
-trap 'rm -f "$DMFILE"' EXIT
-# shellcheck disable=SC2086
-"$CC" $CFLAGS -E -dM "$SRC" > "$DMFILE" 2>/dev/null || true
-if grep -q '^#define RLOS_ATOM 1$' "$DMFILE"; then
-  ok "RLOS_ATOM reached the preprocessor"
-else
-  fail "RLOS_ATOM did not reach the preprocessor - the guard is a no-op"
+header "Building"
+info "cargo build --release --features atom"
+# cd into the crate so cargo reads its .cargo/config.toml (baseline CPU,
+# offline). CARGO_TARGET_DIR is explicit so $BIN is always the artifact just
+# produced, even if the caller exported a shared target directory.
+if ! ( cd "$CRATE" && CARGO_TARGET_DIR="$CRATE/target" \
+         cargo build --release --offline --features atom ); then
+  fail "atom init build failed"
 fi
 
-# And confirm the desktop build still compiles without it, which is the whole
-# risk of sharing a file.
-info "checking the desktop build is unaffected..."
-if "$CC" -std=gnu11 -O2 -Wall -Wextra -Wno-unused-parameter -D_GNU_SOURCE \
-     -fsyntax-only "$SRC" 2>/dev/null; then
-  ok "desktop build still compiles"
-else
-  fail "the desktop build broke - a guard is unbalanced"
-fi
+[ -f "$BIN" ] || fail "cargo succeeded but $BIN is missing"
+cp -f "$BIN" "$OUT"
+chmod 755 "$OUT"
 
-# Xorg must not be referenced on atom's path. The capability gate handles this,
-# but assert it: a hard /bin/Xorg path that ran anyway would mean atom booting
-# into a crash loop with no Xorg present.
-if grep -q 'access("/bin/Xorg", X_OK)' "$SRC"; then
-  ok "desktop path is capability-gated on /bin/Xorg existing"
+header "Verifying the feature actually bit"
+# The desktop-only /tmp/fccache string must be absent. grep -a reads the ELF as
+# text; no pipe means no SIGPIPE-under-pipefail trap (the old C script had to
+# use a temp file for exactly that reason).
+if grep -aq '/tmp/fccache' "$OUT"; then
+  fail "atom feature did not bite: /tmp/fccache is still present in $OUT"
 fi
+ok "atom build has no /tmp/fccache path (desktop-only code compiled out)"
+
+# PID 1 must be static: there is no dynamic loader this early. And it must not
+# be PIE: -no-pie is what lets _start run before any relocation processing.
+if ! readelf -h "$OUT" | grep -qE 'Type:[[:space:]]+EXEC'; then
+  fail "$OUT is not a non-PIE executable"
+fi
+if readelf -d "$OUT" 2>/dev/null | grep -q NEEDED; then
+  fail "$OUT has dynamic dependencies - atom-init must be statically linked"
+fi
+ok "static, non-PIE"
+
+# Same no-AVX contract as the desktop init: this binary is PID 1 on arbitrary
+# x86-64 CPUs, including QEMU's qemu64 model. A match is a hard failure, not a
+# warning - there is no libc here to blame.
+if objdump -d "$OUT" \
+     | grep -qE '\bv(zeroall|zeroupper|mov[a-z]*|pxor|broadcast[a-z]*)\b'; then
+  fail "$OUT contains AVX instructions - PID 1 would SIGILL on a pre-AVX CPU"
+fi
+ok "no AVX instructions"
 
 header "done"
-ok "atom init built"
+ok "atom-init ($(du -h "$OUT" | cut -f1))"
 info "next: build_atom_rootfs.sh installs it as /sbin/init."

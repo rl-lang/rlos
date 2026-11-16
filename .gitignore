@@ -113,6 +113,11 @@ rl_programs/nano/nano.c
 rl_programs/nano/rl_runtime.c
 rl_programs/nano/rl_runtime.h
 rl_programs/nano/miniaudio.h
+# Rust init crate (symlink to the external source tree; build output stays
+# outside the repo)
+rlos-init
+rlos-init/
+
 # Init Binary
 rlos-initramfs/init
 # bwrap image for RLOS Atom

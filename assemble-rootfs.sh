@@ -848,13 +848,38 @@ fi
 substep "dev symlinks:$rlt_symlinked"
 
 # RL Programs
+#
+# Every top-level *.rl is installed, not just RL_BIN_PROGRAMS. The extra
+# entries are symlinks into the core-utils checkout (see rl_programs/), so
+# editing a program there and rebuilding picks the change up with no copy step
+# to remember. cp follows the links, so the image holds real files and does not
+# depend on core-utils existing at runtime.
 step "installing rl-program sources..."
 mkdir -p "$TARGET/home/user/programs/rl"
-for prog in "${RL_BIN_PROGRAMS[@]}"; do
-    cp "$PROGRAMS/$prog.rl" "$TARGET/home/user/programs/rl/$prog.rl"
+n_rl_programs=0
+n_rl_broken=0
+for src in "$PROGRAMS"/*.rl; do
+    if [[ ! -f "$src" ]]; then
+        # A dangling symlink means the core-utils checkout is missing or has
+        # moved. Count it: an image that quietly ships fewer programs than the
+        # tree lists is exactly the failure this would otherwise hide.
+        if [[ -L "$src" ]]; then
+            warn "broken link $src -> $(readlink "$src")"
+            n_rl_broken=$((n_rl_broken + 1))
+        fi
+        continue
+    fi
+    cp "$src" "$TARGET/home/user/programs/rl/${src##*/}"
+    n_rl_programs=$((n_rl_programs + 1))
 done
+if [[ "$n_rl_broken" -ne 0 ]]; then
+    errmsg "$n_rl_broken rl program link(s) do not resolve"
+    echo "  hint: the symlinks in rl_programs/ point at ../core-utils." >&2
+    echo "        Clone it beside this repo, or relink: ./link_core_utils.sh" >&2
+    exit 1
+fi
 cp "$PROGRAMS/nano/nano.rl" "$TARGET/home/user/programs/rl/nano.rl"
-substep "rl sources in /home/user/programs/rl"
+substep "$n_rl_programs rl source(s) in /home/user/programs/rl"
 
 # Scripts
 step "staging udhcpc lease script..."

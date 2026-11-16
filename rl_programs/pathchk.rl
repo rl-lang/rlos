@@ -1,0 +1,1 @@
+../../core-utils/pathchk/pathchk.rl
